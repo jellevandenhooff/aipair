@@ -1,12 +1,24 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, forwardRef, useImperativeHandle } from 'react';
 import { VList, VListHandle } from 'virtua';
 import { Diff, Review, Thread, addComment } from '../api';
+
+export interface DiffViewerHandle {
+  scrollToThread: (threadId: string) => void;
+}
 
 interface Props {
   diff: Diff;
   review: Review | null;
   onReviewUpdate: (review: Review) => void;
   focused: boolean;
+  replyingToThread: boolean;
+  onStartReply: (threadId: string) => void;
+  onReplySubmit: (threadId: string) => void;
+  onCancelReply: () => void;
+  onResolveThread: (threadId: string) => void;
+  replyText: string;
+  onReplyTextChange: (text: string) => void;
+  submittingReply: boolean;
 }
 
 // Flattened row types for virtualization
@@ -121,7 +133,23 @@ function insertInlineRows(
   return result;
 }
 
-export function DiffViewer({ diff, review, onReviewUpdate, focused }: Props) {
+export const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
+  {
+    diff,
+    review,
+    onReviewUpdate,
+    focused,
+    replyingToThread,
+    onStartReply,
+    onReplySubmit,
+    onCancelReply,
+    onResolveThread,
+    replyText,
+    onReplyTextChange,
+    submittingReply,
+  },
+  ref
+) {
   const [selectedLines, setSelectedLines] = useState<{ file: string; start: number; end: number } | null>(null);
   const [commentText, setCommentText] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -129,6 +157,7 @@ export function DiffViewer({ diff, review, onReviewUpdate, focused }: Props) {
   const listRef = useRef<VListHandle>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const replyTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   const baseRows = useMemo(() => parseDiffToRows(diff.raw), [diff.raw]);
 
@@ -138,10 +167,31 @@ export function DiffViewer({ diff, review, onReviewUpdate, focused }: Props) {
     return insertInlineRows(baseRows, threads, selectedLines);
   }, [baseRows, review?.threads, selectedLines]);
 
-  // Find indices of line rows only (for keyboard nav)
-  const lineIndices = useMemo(() => {
+  // Build map of threadId -> row index for scrolling
+  const threadRowIndices = useMemo(() => {
+    const map = new Map<string, number>();
+    rows.forEach((row, idx) => {
+      if (row.type === 'thread') {
+        map.set(row.thread.id, idx);
+      }
+    });
+    return map;
+  }, [rows]);
+
+  // Expose scrollToThread via ref
+  useImperativeHandle(ref, () => ({
+    scrollToThread: (threadId: string) => {
+      const idx = threadRowIndices.get(threadId);
+      if (idx !== undefined) {
+        listRef.current?.scrollToIndex(idx, { align: 'center' });
+      }
+    },
+  }), [threadRowIndices]);
+
+  // Find indices of navigable rows (lines and threads) for keyboard nav
+  const navigableIndices = useMemo(() => {
     return rows
-      .map((row, idx) => (row.type === 'line' ? idx : -1))
+      .map((row, idx) => (row.type === 'line' || row.type === 'thread' ? idx : -1))
       .filter((idx) => idx !== -1);
   }, [rows]);
 
@@ -163,6 +213,13 @@ export function DiffViewer({ diff, review, onReviewUpdate, focused }: Props) {
       textareaRef.current.focus();
     }
   }, [selectedLines]);
+
+  // Focus reply textarea when replying starts
+  useEffect(() => {
+    if (replyingToThread && focused && replyTextareaRef.current) {
+      replyTextareaRef.current.focus();
+    }
+  }, [replyingToThread, focused]);
 
   const handleLineClick = useCallback((file: string, lineNum: number) => {
     if (!review) return;
@@ -210,15 +267,15 @@ export function DiffViewer({ diff, review, onReviewUpdate, focused }: Props) {
       // Only handle navigation keys when this panel is focused
       if (!focused) return;
 
-      const currentLineIdx = lineIndices.indexOf(focusedIndex);
+      const currentNavIdx = navigableIndices.indexOf(focusedIndex);
 
       switch (e.key) {
         case 'j':
         case 'ArrowDown': {
           e.preventDefault();
-          const nextIdx = currentLineIdx + 1;
-          if (nextIdx < lineIndices.length) {
-            const newFocusedIndex = lineIndices[nextIdx];
+          const nextIdx = currentNavIdx + 1;
+          if (nextIdx < navigableIndices.length) {
+            const newFocusedIndex = navigableIndices[nextIdx];
             setFocusedIndex(newFocusedIndex);
             listRef.current?.scrollToIndex(newFocusedIndex, { align: 'center' });
           }
@@ -227,9 +284,9 @@ export function DiffViewer({ diff, review, onReviewUpdate, focused }: Props) {
         case 'k':
         case 'ArrowUp': {
           e.preventDefault();
-          const prevIdx = currentLineIdx - 1;
+          const prevIdx = currentNavIdx - 1;
           if (prevIdx >= 0) {
-            const newFocusedIndex = lineIndices[prevIdx];
+            const newFocusedIndex = navigableIndices[prevIdx];
             setFocusedIndex(newFocusedIndex);
             listRef.current?.scrollToIndex(newFocusedIndex, { align: 'center' });
           }
@@ -237,10 +294,11 @@ export function DiffViewer({ diff, review, onReviewUpdate, focused }: Props) {
         }
         case 'Enter':
         case 'c': {
+          // Create new comment - only works on lines, not threads
           if (!review) return;
-          e.preventDefault();
           const row = rows[focusedIndex];
           if (row.type === 'line') {
+            e.preventDefault();
             const lineNum = row.line.newLineNum ?? row.line.oldLineNum ?? 0;
             if (lineNum > 0) {
               setSelectedLines({ file: row.file, start: lineNum, end: lineNum });
@@ -251,22 +309,24 @@ export function DiffViewer({ diff, review, onReviewUpdate, focused }: Props) {
         case 'Escape': {
           setSelectedLines(null);
           setCommentText('');
+          onCancelReply();
           break;
         }
         case 'g': {
           e.preventDefault();
-          if (lineIndices.length > 0) {
-            setFocusedIndex(lineIndices[0]);
-            listRef.current?.scrollToIndex(lineIndices[0]);
+          if (navigableIndices.length > 0) {
+            const newIdx = navigableIndices[0];
+            setFocusedIndex(newIdx);
+            listRef.current?.scrollToIndex(newIdx);
           }
           break;
         }
         case 'G': {
           e.preventDefault();
-          if (lineIndices.length > 0) {
-            const lastIdx = lineIndices[lineIndices.length - 1];
-            setFocusedIndex(lastIdx);
-            listRef.current?.scrollToIndex(lastIdx);
+          if (navigableIndices.length > 0) {
+            const newIdx = navigableIndices[navigableIndices.length - 1];
+            setFocusedIndex(newIdx);
+            listRef.current?.scrollToIndex(newIdx);
           }
           break;
         }
@@ -274,9 +334,9 @@ export function DiffViewer({ diff, review, onReviewUpdate, focused }: Props) {
           if (!e.ctrlKey) return;
           e.preventDefault();
           const halfPage = 15;
-          const nextIdx = Math.min(currentLineIdx + halfPage, lineIndices.length - 1);
+          const nextIdx = Math.min(currentNavIdx + halfPage, navigableIndices.length - 1);
           if (nextIdx >= 0) {
-            const newFocusedIndex = lineIndices[nextIdx];
+            const newFocusedIndex = navigableIndices[nextIdx];
             setFocusedIndex(newFocusedIndex);
             listRef.current?.scrollToIndex(newFocusedIndex, { align: 'center' });
           }
@@ -286,11 +346,29 @@ export function DiffViewer({ diff, review, onReviewUpdate, focused }: Props) {
           if (!e.ctrlKey) return;
           e.preventDefault();
           const halfPage = 15;
-          const prevIdx = Math.max(currentLineIdx - halfPage, 0);
-          if (lineIndices.length > 0) {
-            const newFocusedIndex = lineIndices[prevIdx];
+          const prevIdx = Math.max(currentNavIdx - halfPage, 0);
+          if (navigableIndices.length > 0) {
+            const newFocusedIndex = navigableIndices[prevIdx];
             setFocusedIndex(newFocusedIndex);
             listRef.current?.scrollToIndex(newFocusedIndex, { align: 'center' });
+          }
+          break;
+        }
+        case 'r': {
+          // Reply to selected thread (must be focused on thread row)
+          const row = rows[focusedIndex];
+          if (row.type === 'thread' && row.thread.status === 'open') {
+            e.preventDefault();
+            onStartReply(row.thread.id);
+          }
+          break;
+        }
+        case 'x': {
+          // Resolve selected thread (must be focused on thread row)
+          const row = rows[focusedIndex];
+          if (row.type === 'thread' && row.thread.status === 'open') {
+            e.preventDefault();
+            onResolveThread(row.thread.id);
           }
           break;
         }
@@ -299,7 +377,7 @@ export function DiffViewer({ diff, review, onReviewUpdate, focused }: Props) {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [focusedIndex, lineIndices, rows, review, focused]);
+  }, [focusedIndex, navigableIndices, rows, review, focused, onStartReply, onResolveThread, onCancelReply]);
 
   // Render function - only called for visible rows
   const renderRow = useCallback((row: Row, idx: number) => {
@@ -321,15 +399,21 @@ export function DiffViewer({ diff, review, onReviewUpdate, focused }: Props) {
 
     if (row.type === 'thread') {
       const { thread } = row;
+      const isFocusedRow = idx === focusedIndex;
       return (
-        <div className="ml-24 mr-4 my-2 bg-amber-50 border border-amber-200 rounded-lg p-3 font-sans">
-          <div className="text-xs text-amber-600 mb-2">
+        <div
+          onClick={() => setFocusedIndex(idx)}
+          className={`ml-24 mr-4 my-2 bg-white border rounded-lg p-3 font-sans shadow-sm cursor-pointer transition-colors ${
+            isFocusedRow && focused
+              ? 'border-blue-500 ring-2 ring-blue-200'
+              : isFocusedRow
+                ? 'border-blue-300'
+                : 'border-gray-200 hover:border-gray-300'
+          }`}
+        >
+          <div className="text-xs text-gray-400 mb-2 font-mono">
             {thread.file}:{thread.line_start}-{thread.line_end}
-            <span className={`ml-2 px-1.5 py-0.5 rounded text-xs ${
-              thread.status === 'open' ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'
-            }`}>
-              {thread.status}
-            </span>
+            <span className="ml-2 text-gray-300">[{thread.id}]</span>
           </div>
           <div className="space-y-2">
             {thread.comments.map((comment, cidx) => (
@@ -352,14 +436,83 @@ export function DiffViewer({ diff, review, onReviewUpdate, focused }: Props) {
               </div>
             ))}
           </div>
+
+          {/* Actions for focused thread - only when diff panel is focused */}
+          {isFocusedRow && focused && thread.status === 'open' && (
+            <div className="mt-3 pt-3 border-t border-gray-100">
+              {replyingToThread ? (
+                <>
+                  <textarea
+                    ref={replyTextareaRef}
+                    value={replyText}
+                    onChange={(e) => onReplyTextChange(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        if (replyText.trim()) onReplySubmit(thread.id);
+                      } else if (e.key === 'Escape') {
+                        onCancelReply();
+                      }
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    placeholder="Reply... (Enter to send, Esc to cancel)"
+                    className="w-full bg-gray-50 border border-gray-200 rounded p-2 text-sm resize-none"
+                    rows={2}
+                  />
+                  <div className="flex justify-between mt-2">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onCancelReply();
+                      }}
+                      className="px-2 py-1 text-xs text-gray-500 hover:text-gray-700"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (replyText.trim()) onReplySubmit(thread.id);
+                      }}
+                      disabled={!replyText.trim() || submittingReply}
+                      className="px-3 py-1 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50"
+                    >
+                      {submittingReply ? '...' : 'Send'}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div className="flex justify-between items-center">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onResolveThread(thread.id);
+                    }}
+                    className="px-2 py-1 text-xs text-green-600 hover:text-green-700 hover:bg-green-100 rounded"
+                  >
+                    Resolve
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onStartReply(thread.id);
+                    }}
+                    className="px-3 py-1 text-sm text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded"
+                  >
+                    Reply
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       );
     }
 
     if (row.type === 'comment-editor') {
       return (
-        <div className="ml-24 mr-4 my-2 bg-blue-50 border border-blue-200 rounded-lg p-3 font-sans">
-          <div className="text-xs text-blue-600 mb-2">
+        <div className="ml-24 mr-4 my-2 bg-white border border-blue-400 rounded-lg p-3 font-sans shadow-sm ring-2 ring-blue-200">
+          <div className="text-xs text-gray-500 mb-2">
             New comment on lines {row.lineStart}-{row.lineEnd}
           </div>
           <textarea
@@ -376,7 +529,7 @@ export function DiffViewer({ diff, review, onReviewUpdate, focused }: Props) {
               }
             }}
             placeholder="Add your comment... (Enter to submit, Esc to cancel)"
-            className="w-full bg-white border border-blue-200 rounded p-2 text-sm resize-none"
+            className="w-full bg-gray-50 border border-gray-200 rounded p-2 text-sm resize-none"
             rows={3}
           />
           <div className="flex justify-end gap-2 mt-2">
@@ -452,7 +605,25 @@ export function DiffViewer({ diff, review, onReviewUpdate, focused }: Props) {
         </span>
       </div>
     );
-  }, [focusedIndex, selectedLines, linesWithThreads, review, handleLineClick, focused, commentText, submitting, handleSubmitComment]);
+  }, [
+    focusedIndex,
+    selectedLines,
+    linesWithThreads,
+    review,
+    handleLineClick,
+    focused,
+    commentText,
+    submitting,
+    handleSubmitComment,
+    replyingToThread,
+    onStartReply,
+    onReplySubmit,
+    onCancelReply,
+    onResolveThread,
+    replyText,
+    onReplyTextChange,
+    submittingReply,
+  ]);
 
   if (rows.length === 0) {
     return (
@@ -470,8 +641,8 @@ export function DiffViewer({ diff, review, onReviewUpdate, focused }: Props) {
 
       {/* Key bindings hint */}
       <div className="fixed bottom-4 left-4 text-xs text-gray-400 z-20">
-        Tab: switch panel | j/k: navigate | ctrl-d/u: page | c: comment | g/G: top/bottom
+        Tab: switch panel | j/k: navigate | ctrl-d/u: page | c: comment | r: reply | x: resolve | g/G: top/bottom
       </div>
     </div>
   );
-}
+});

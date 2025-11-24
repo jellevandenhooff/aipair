@@ -1,8 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Change, Diff, Review, fetchChanges, fetchDiff, fetchReview, createReview } from './api';
-import { DiffViewer } from './components/DiffViewer';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { Change, Diff, Review, fetchChanges, fetchDiff, fetchReview, createReview, replyToThread, resolveThread } from './api';
+import { DiffViewer, DiffViewerHandle } from './components/DiffViewer';
 import { ChangeList } from './components/ChangeList';
 import { CommentPanel } from './components/CommentPanel';
+
+type FocusedPanel = 'changes' | 'diff' | 'threads';
 
 export default function App() {
   const [changes, setChanges] = useState<Change[]>([]);
@@ -11,7 +13,13 @@ export default function App() {
   const [review, setReview] = useState<Review | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [focusedPanel, setFocusedPanel] = useState<'changes' | 'diff'>('changes');
+  const [focusedPanel, setFocusedPanel] = useState<FocusedPanel>('changes');
+  const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
+  const [replyingToThread, setReplyingToThread] = useState(false);
+  const [replyText, setReplyText] = useState('');
+  const [submittingReply, setSubmittingReply] = useState(false);
+
+  const diffViewerRef = useRef<DiffViewerHandle>(null);
 
   useEffect(() => {
     fetchChanges()
@@ -24,6 +32,7 @@ export default function App() {
     if (!selectedChange) {
       setDiff(null);
       setReview(null);
+      setSelectedThreadId(null);
       return;
     }
 
@@ -46,15 +55,31 @@ export default function App() {
       .finally(() => setLoading(false));
   }, [selectedChange]);
 
+  // Get thread indices for navigation
+  const threadIds = review?.threads.map(t => t.id) || [];
+
   // Keyboard navigation
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return;
 
-      // Tab switches focus between panels
+      // Tab cycles through panels: changes -> diff -> threads -> changes
+      // Shift+Tab goes backwards
       if (e.key === 'Tab') {
         e.preventDefault();
-        setFocusedPanel((p) => (p === 'changes' ? 'diff' : 'changes'));
+        if (e.shiftKey) {
+          setFocusedPanel((p) => {
+            if (p === 'changes') return review?.threads.length ? 'threads' : 'diff';
+            if (p === 'diff') return 'changes';
+            return 'diff';
+          });
+        } else {
+          setFocusedPanel((p) => {
+            if (p === 'changes') return 'diff';
+            if (p === 'diff') return review?.threads.length ? 'threads' : 'changes';
+            return 'changes';
+          });
+        }
         return;
       }
 
@@ -81,15 +106,92 @@ export default function App() {
           }
         }
       }
+
+      // j/k for threads when focused on threads panel
+      if (focusedPanel === 'threads' && threadIds.length > 0) {
+        const currentIdx = selectedThreadId ? threadIds.indexOf(selectedThreadId) : -1;
+
+        switch (e.key) {
+          case 'j':
+          case 'ArrowDown': {
+            e.preventDefault();
+            const nextIdx = currentIdx < 0 || currentIdx >= threadIds.length - 1 ? 0 : currentIdx + 1;
+            setSelectedThreadId(threadIds[nextIdx]);
+            break;
+          }
+          case 'k':
+          case 'ArrowUp': {
+            e.preventDefault();
+            const prevIdx = currentIdx <= 0 ? threadIds.length - 1 : currentIdx - 1;
+            setSelectedThreadId(threadIds[prevIdx]);
+            break;
+          }
+          case 'x': {
+            // Resolve thread
+            if (selectedThreadId && review) {
+              e.preventDefault();
+              handleResolveThread(selectedThreadId);
+            }
+            break;
+          }
+          case 'r': {
+            // Focus reply input (handled by CommentPanel)
+            break;
+          }
+        }
+      }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [changes, selectedChange, focusedPanel]);
+  }, [changes, selectedChange, focusedPanel, threadIds, selectedThreadId, review]);
 
   const handleReviewUpdate = useCallback((updatedReview: Review) => {
     setReview(updatedReview);
   }, []);
+
+  const handleThreadSelect = useCallback((threadId: string | null) => {
+    setSelectedThreadId(threadId);
+    setReplyingToThread(false);
+    setReplyText('');
+  }, []);
+
+  const handleStartReply = useCallback((threadId: string) => {
+    setSelectedThreadId(threadId);
+    setReplyingToThread(true);
+  }, []);
+
+  const handleReplySubmit = useCallback(async (threadId: string) => {
+    if (!replyText.trim() || !review) return;
+
+    setSubmittingReply(true);
+    try {
+      const updatedReview = await replyToThread(review.change_id, threadId, replyText.trim());
+      setReview(updatedReview);
+      setReplyText('');
+      setReplyingToThread(false);
+    } catch (e) {
+      console.error('Failed to reply:', e);
+    } finally {
+      setSubmittingReply(false);
+    }
+  }, [replyText, review]);
+
+  const handleCancelReply = useCallback(() => {
+    setReplyingToThread(false);
+    setReplyText('');
+  }, []);
+
+  const handleResolveThread = useCallback(async (threadId: string) => {
+    if (!review) return;
+
+    try {
+      const updatedReview = await resolveThread(review.change_id, threadId);
+      setReview(updatedReview);
+    } catch (e) {
+      console.error('Failed to resolve:', e);
+    }
+  }, [review]);
 
   if (error) {
     return (
@@ -108,11 +210,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <header className="bg-gray-100 border-b border-gray-200 p-4">
-        <h1 className="text-xl font-bold">aipair</h1>
-        <p className="text-sm text-gray-500">Code review for AI pair programming</p>
-      </header>
+    <div className="h-screen flex flex-col overflow-hidden">
 
       <div className="flex flex-1 overflow-hidden">
         {/* Change list sidebar */}
@@ -140,10 +238,19 @@ export default function App() {
               <div className="flex-1 flex overflow-hidden">
                 <div className="flex-1 overflow-auto">
                   <DiffViewer
+                    ref={diffViewerRef}
                     diff={diff}
                     review={review}
                     onReviewUpdate={handleReviewUpdate}
                     focused={focusedPanel === 'diff'}
+                    replyingToThread={replyingToThread && focusedPanel === 'diff'}
+                    onStartReply={handleStartReply}
+                    onReplySubmit={handleReplySubmit}
+                    onCancelReply={handleCancelReply}
+                    onResolveThread={handleResolveThread}
+                    replyText={replyText}
+                    onReplyTextChange={setReplyText}
+                    submittingReply={submittingReply}
                   />
                 </div>
 
@@ -152,6 +259,17 @@ export default function App() {
                     <CommentPanel
                       review={review}
                       onReviewUpdate={handleReviewUpdate}
+                      focused={focusedPanel === 'threads'}
+                      selectedThreadId={selectedThreadId}
+                      onThreadSelect={handleThreadSelect}
+                      replyingToThread={replyingToThread}
+                      onStartReply={handleStartReply}
+                      onReplySubmit={handleReplySubmit}
+                      onCancelReply={handleCancelReply}
+                      onResolveThread={handleResolveThread}
+                      replyText={replyText}
+                      onReplyTextChange={setReplyText}
+                      submittingReply={submittingReply}
                     />
                   </aside>
                 )}

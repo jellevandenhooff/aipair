@@ -37,6 +37,8 @@ pub async fn serve(port: u16) -> anyhow::Result<()> {
         .route("/api/changes/{change_id}/review", get(get_review))
         .route("/api/changes/{change_id}/review", post(create_review))
         .route("/api/changes/{change_id}/comments", post(add_comment))
+        .route("/api/changes/{change_id}/threads/{thread_id}/reply", post(reply_to_thread))
+        .route("/api/changes/{change_id}/threads/{thread_id}/resolve", post(resolve_thread))
         .with_state(state)
         .layer(cors);
 
@@ -143,6 +145,32 @@ async fn add_comment(
         &req.text,
     ) {
         Ok((review, thread_id)) => Json(AddCommentResponse { review, thread_id }).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ReplyRequest {
+    text: String,
+}
+
+async fn reply_to_thread(
+    State(state): State<Arc<AppState>>,
+    Path((change_id, thread_id)): Path<(String, String)>,
+    Json(req): Json<ReplyRequest>,
+) -> impl IntoResponse {
+    match state.store.reply_to_thread(&change_id, &thread_id, Author::User, &req.text) {
+        Ok(review) => Json(ReviewResponse { review: Some(review) }).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn resolve_thread(
+    State(state): State<Arc<AppState>>,
+    Path((change_id, thread_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    match state.store.resolve_thread(&change_id, &thread_id) {
+        Ok(review) => Json(ReviewResponse { review: Some(review) }).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

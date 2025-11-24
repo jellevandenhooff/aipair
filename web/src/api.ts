@@ -58,3 +58,30 @@ export async function addComment(
   if (!res.ok) throw new Error(`Failed to add comment: ${res.statusText}`);
   return res.json();
 }
+
+export async function replyToThread(
+  changeId: string,
+  threadId: string,
+  text: string
+): Promise<Review> {
+  const res = await fetch(`${API_BASE}/changes/${changeId}/threads/${threadId}/reply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) throw new Error(`Failed to reply: ${res.statusText}`);
+  const data = await res.json();
+  return data.review;
+}
+
+export async function resolveThread(
+  changeId: string,
+  threadId: string
+): Promise<Review> {
+  const res = await fetch(`${API_BASE}/changes/${changeId}/threads/${threadId}/resolve`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(`Failed to resolve: ${res.statusText}`);
+  const data = await res.json();
+  return data.review;
+}
