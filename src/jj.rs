@@ -100,6 +100,10 @@ impl Jj {
             }
             let parts: Vec<&str> = line.split('\t').collect();
             if parts.len() >= 6 {
+                // Skip the root commit (all z's) - it has no parent and can't be diffed
+                if parts[0].chars().all(|c| c == 'z') {
+                    continue;
+                }
                 changes.push(Change {
                     change_id: parts[0].to_string(),
                     commit_id: parts[1].to_string(),
