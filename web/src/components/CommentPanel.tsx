@@ -1,36 +1,14 @@
 import { useRef, useEffect, forwardRef } from 'react';
-import { Review, Thread } from '../api';
+import { Thread } from '../api';
+import { useAppStore } from '../store';
 
-interface Props {
-  review: Review;
-  onReviewUpdate: (review: Review) => void;
-  focused: boolean;
-  selectedThreadId: string | null;
-  onThreadSelect: (threadId: string | null) => void;
-  replyingToThread: boolean;
-  onStartReply: (threadId: string) => void;
-  onReplySubmit: (threadId: string) => void;
-  onCancelReply: () => void;
-  onResolveThread: (threadId: string) => void;
-  replyText: string;
-  onReplyTextChange: (text: string) => void;
-  submittingReply: boolean;
-}
+export function CommentPanel() {
+  const review = useAppStore((s) => s.review);
+  const focused = useAppStore((s) => s.focusedPanel === 'threads');
+  const selectedThreadId = useAppStore((s) => s.selectedThreadId);
+  const replyingToThread = useAppStore((s) => s.replyingToThread);
+  const startReply = useAppStore((s) => s.startReply);
 
-export function CommentPanel({
-  review,
-  focused,
-  selectedThreadId,
-  onThreadSelect,
-  replyingToThread,
-  onStartReply,
-  onReplySubmit,
-  onCancelReply,
-  onResolveThread,
-  replyText,
-  onReplyTextChange,
-  submittingReply,
-}: Props) {
   const replyInputRef = useRef<HTMLTextAreaElement>(null);
   const threadRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
@@ -50,13 +28,13 @@ export function CommentPanel({
 
       if (e.key === 'r') {
         e.preventDefault();
-        onStartReply(selectedThreadId);
+        startReply(selectedThreadId);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [focused, selectedThreadId, onStartReply]);
+  }, [focused, selectedThreadId, startReply]);
 
   // Focus textarea when replying starts
   useEffect(() => {
@@ -65,7 +43,7 @@ export function CommentPanel({
     }
   }, [replyingToThread, focused]);
 
-  if (review.threads.length === 0) {
+  if (!review || review.threads.length === 0) {
     return (
       <div className="p-4 text-gray-400 text-sm">
         No comments yet. Click on lines in the diff to add comments.
@@ -79,9 +57,7 @@ export function CommentPanel({
   return (
     <div className="divide-y divide-gray-200">
       <div className="p-4">
-        <h3 className="font-semibold text-sm text-gray-700">
-          Comments ({review.threads.length})
-        </h3>
+        <h3 className="font-semibold text-sm text-gray-700">Comments ({review.threads.length})</h3>
         <p className="text-xs text-gray-400 mt-1">
           {focused ? 'j/k: navigate | r: reply | x: resolve' : 'Tab to focus'}
         </p>
@@ -101,17 +77,6 @@ export function CommentPanel({
                   else threadRefs.current.delete(thread.id);
                 }}
                 thread={thread}
-                selected={selectedThreadId === thread.id}
-                focused={focused}
-                replying={replyingToThread && selectedThreadId === thread.id && focused}
-                onSelect={() => onThreadSelect(thread.id)}
-                onStartReply={() => onStartReply(thread.id)}
-                onReplySubmit={() => onReplySubmit(thread.id)}
-                onCancelReply={onCancelReply}
-                onResolve={() => onResolveThread(thread.id)}
-                replyText={selectedThreadId === thread.id ? replyText : ''}
-                onReplyTextChange={onReplyTextChange}
-                submittingReply={submittingReply}
                 replyInputRef={selectedThreadId === thread.id ? replyInputRef : undefined}
               />
             ))}
@@ -133,17 +98,6 @@ export function CommentPanel({
                   else threadRefs.current.delete(thread.id);
                 }}
                 thread={thread}
-                selected={selectedThreadId === thread.id}
-                focused={focused}
-                replying={false}
-                onSelect={() => onThreadSelect(thread.id)}
-                onStartReply={() => onStartReply(thread.id)}
-                onReplySubmit={() => onReplySubmit(thread.id)}
-                onCancelReply={onCancelReply}
-                onResolve={() => onResolveThread(thread.id)}
-                replyText=""
-                onReplyTextChange={onReplyTextChange}
-                submittingReply={submittingReply}
                 replyInputRef={undefined}
               />
             ))}
@@ -156,39 +110,34 @@ export function CommentPanel({
 
 interface ThreadCardProps {
   thread: Thread;
-  selected: boolean;
-  focused: boolean;
-  replying: boolean;
-  onSelect: () => void;
-  onStartReply: () => void;
-  onReplySubmit: () => void;
-  onCancelReply: () => void;
-  onResolve: () => void;
-  replyText: string;
-  onReplyTextChange: (text: string) => void;
-  submittingReply: boolean;
   replyInputRef?: React.RefObject<HTMLTextAreaElement>;
 }
 
-const ThreadCard = forwardRef<HTMLDivElement, ThreadCardProps>(function ThreadCard({
-  thread,
-  selected,
-  focused,
-  replying,
-  onSelect,
-  onStartReply,
-  onReplySubmit,
-  onCancelReply,
-  onResolve,
-  replyText,
-  onReplyTextChange,
-  submittingReply,
-  replyInputRef,
-}, ref) {
+const ThreadCard = forwardRef<HTMLDivElement, ThreadCardProps>(function ThreadCard(
+  { thread, replyInputRef },
+  ref
+) {
+  // Get state from store
+  const focused = useAppStore((s) => s.focusedPanel === 'threads');
+  const selectedThreadId = useAppStore((s) => s.selectedThreadId);
+  const replyingToThread = useAppStore((s) => s.replyingToThread);
+  const replyText = useAppStore((s) => s.replyText);
+  const submittingReply = useAppStore((s) => s.submittingReply);
+
+  const setSelectedThreadId = useAppStore((s) => s.setSelectedThreadId);
+  const startReply = useAppStore((s) => s.startReply);
+  const cancelReply = useAppStore((s) => s.cancelReply);
+  const setReplyText = useAppStore((s) => s.setReplyText);
+  const submitReply = useAppStore((s) => s.submitReply);
+  const resolveThread = useAppStore((s) => s.resolveThread);
+
+  const selected = selectedThreadId === thread.id;
+  const replying = replyingToThread && selected && focused;
+
   return (
     <div
       ref={ref}
-      onClick={onSelect}
+      onClick={() => setSelectedThreadId(thread.id)}
       className={`bg-white border rounded-lg p-3 shadow-sm cursor-pointer transition-colors ${
         selected && focused
           ? 'border-blue-500 ring-2 ring-blue-200'
@@ -207,9 +156,7 @@ const ThreadCard = forwardRef<HTMLDivElement, ThreadCardProps>(function ThreadCa
           <div
             key={idx}
             className={`text-sm ${
-              comment.author === 'claude'
-                ? 'bg-purple-50 border-l-2 border-purple-400 pl-2'
-                : ''
+              comment.author === 'claude' ? 'bg-purple-50 border-l-2 border-purple-400 pl-2' : ''
             }`}
           >
             <span
@@ -232,13 +179,13 @@ const ThreadCard = forwardRef<HTMLDivElement, ThreadCardProps>(function ThreadCa
               <textarea
                 ref={replyInputRef}
                 value={replyText}
-                onChange={(e) => onReplyTextChange(e.target.value)}
+                onChange={(e) => setReplyText(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
-                    if (replyText.trim()) onReplySubmit();
+                    if (replyText.trim()) submitReply(thread.id);
                   } else if (e.key === 'Escape') {
-                    onCancelReply();
+                    cancelReply();
                   }
                 }}
                 placeholder="Reply... (Enter to send, Esc to cancel)"
@@ -249,7 +196,7 @@ const ThreadCard = forwardRef<HTMLDivElement, ThreadCardProps>(function ThreadCa
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    onCancelReply();
+                    cancelReply();
                   }}
                   className="px-2 py-1 text-xs text-gray-500 hover:text-gray-700"
                 >
@@ -258,7 +205,7 @@ const ThreadCard = forwardRef<HTMLDivElement, ThreadCardProps>(function ThreadCa
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (replyText.trim()) onReplySubmit();
+                    if (replyText.trim()) submitReply(thread.id);
                   }}
                   disabled={!replyText.trim() || submittingReply}
                   className="px-3 py-1 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50"
@@ -272,7 +219,7 @@ const ThreadCard = forwardRef<HTMLDivElement, ThreadCardProps>(function ThreadCa
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  onResolve();
+                  resolveThread(thread.id);
                 }}
                 className="px-2 py-1 text-xs text-green-600 hover:text-green-700 hover:bg-green-50 rounded"
               >
@@ -281,7 +228,7 @@ const ThreadCard = forwardRef<HTMLDivElement, ThreadCardProps>(function ThreadCa
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  onStartReply();
+                  startReply(thread.id);
                 }}
                 className="px-3 py-1 text-sm text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded"
               >

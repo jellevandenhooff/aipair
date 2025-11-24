@@ -1,24 +1,10 @@
 import { useState, useEffect, useCallback, useMemo, useRef, forwardRef, useImperativeHandle } from 'react';
 import { VList, VListHandle } from 'virtua';
-import { Diff, Review, Thread, addComment } from '../api';
+import { Thread, addComment } from '../api';
+import { useAppStore } from '../store';
 
 export interface DiffViewerHandle {
   scrollToThread: (threadId: string) => void;
-}
-
-interface Props {
-  diff: Diff;
-  review: Review | null;
-  onReviewUpdate: (review: Review) => void;
-  focused: boolean;
-  replyingToThread: boolean;
-  onStartReply: (threadId: string) => void;
-  onReplySubmit: (threadId: string) => void;
-  onCancelReply: () => void;
-  onResolveThread: (threadId: string) => void;
-  replyText: string;
-  onReplyTextChange: (text: string) => void;
-  submittingReply: boolean;
 }
 
 // Flattened row types for virtualization
@@ -119,7 +105,8 @@ function insertInlineRows(
       }
 
       // Insert comment editor after the selected line range ends
-      if (editorKey === key) {
+      // Only insert after lines with newLineNum to avoid duplicates on changed lines
+      if (editorKey === key && row.line.newLineNum !== undefined) {
         result.push({
           type: 'comment-editor',
           file: selectedLines!.file,
@@ -133,33 +120,34 @@ function insertInlineRows(
   return result;
 }
 
-export const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewer(
-  {
-    diff,
-    review,
-    onReviewUpdate,
-    focused,
-    replyingToThread,
-    onStartReply,
-    onReplySubmit,
-    onCancelReply,
-    onResolveThread,
-    replyText,
-    onReplyTextChange,
-    submittingReply,
-  },
-  ref
-) {
+export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_props, ref) {
+  // Get state from store
+  const diff = useAppStore((s) => s.diff);
+  const review = useAppStore((s) => s.review);
+  const focused = useAppStore((s) => s.focusedPanel === 'diff');
+  const replyingToThread = useAppStore((s) => s.replyingToThread);
+  const replyText = useAppStore((s) => s.replyText);
+  const submittingReply = useAppStore((s) => s.submittingReply);
+
+  const setReview = useAppStore((s) => s.setReview);
+  const startReply = useAppStore((s) => s.startReply);
+  const cancelReply = useAppStore((s) => s.cancelReply);
+  const setReplyText = useAppStore((s) => s.setReplyText);
+  const submitReply = useAppStore((s) => s.submitReply);
+  const resolveThread = useAppStore((s) => s.resolveThread);
+
+  // Local state
   const [selectedLines, setSelectedLines] = useState<{ file: string; start: number; end: number } | null>(null);
   const [commentText, setCommentText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [focusedIndex, setFocusedIndex] = useState(0);
+
   const listRef = useRef<VListHandle>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const replyTextareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const baseRows = useMemo(() => parseDiffToRows(diff.raw), [diff.raw]);
+  const baseRows = useMemo(() => (diff ? parseDiffToRows(diff.raw) : []), [diff?.raw]);
 
   // Insert thread rows and editor row
   const rows = useMemo(() => {
@@ -179,14 +167,18 @@ export const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewe
   }, [rows]);
 
   // Expose scrollToThread via ref
-  useImperativeHandle(ref, () => ({
-    scrollToThread: (threadId: string) => {
-      const idx = threadRowIndices.get(threadId);
-      if (idx !== undefined) {
-        listRef.current?.scrollToIndex(idx, { align: 'center' });
-      }
-    },
-  }), [threadRowIndices]);
+  useImperativeHandle(
+    ref,
+    () => ({
+      scrollToThread: (threadId: string) => {
+        const idx = threadRowIndices.get(threadId);
+        if (idx !== undefined) {
+          listRef.current?.scrollToIndex(idx, { align: 'center' });
+        }
+      },
+    }),
+    [threadRowIndices]
+  );
 
   // Find indices of navigable rows (lines and threads) for keyboard nav
   const navigableIndices = useMemo(() => {
@@ -221,20 +213,23 @@ export const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewe
     }
   }, [replyingToThread, focused]);
 
-  const handleLineClick = useCallback((file: string, lineNum: number) => {
-    if (!review) return;
+  const handleLineClick = useCallback(
+    (file: string, lineNum: number) => {
+      if (!review) return;
 
-    setSelectedLines((prev) => {
-      if (prev && prev.file === file) {
-        return {
-          file,
-          start: Math.min(prev.start, lineNum),
-          end: Math.max(prev.end, lineNum),
-        };
-      }
-      return { file, start: lineNum, end: lineNum };
-    });
-  }, [review]);
+      setSelectedLines((prev) => {
+        if (prev && prev.file === file) {
+          return {
+            file,
+            start: Math.min(prev.start, lineNum),
+            end: Math.max(prev.end, lineNum),
+          };
+        }
+        return { file, start: lineNum, end: lineNum };
+      });
+    },
+    [review]
+  );
 
   const handleSubmitComment = useCallback(async () => {
     if (!selectedLines || !commentText.trim() || !review) return;
@@ -248,7 +243,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewe
         selectedLines.end,
         commentText.trim()
       );
-      onReviewUpdate(result.review);
+      setReview(result.review);
       setSelectedLines(null);
       setCommentText('');
     } catch (e) {
@@ -256,7 +251,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewe
     } finally {
       setSubmitting(false);
     }
-  }, [selectedLines, commentText, review, onReviewUpdate]);
+  }, [selectedLines, commentText, review, setReview]);
 
   // Keyboard navigation
   useEffect(() => {
@@ -309,7 +304,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewe
         case 'Escape': {
           setSelectedLines(null);
           setCommentText('');
-          onCancelReply();
+          cancelReply();
           break;
         }
         case 'g': {
@@ -359,7 +354,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewe
           const row = rows[focusedIndex];
           if (row.type === 'thread' && row.thread.status === 'open') {
             e.preventDefault();
-            onStartReply(row.thread.id);
+            startReply(row.thread.id);
           }
           break;
         }
@@ -368,7 +363,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewe
           const row = rows[focusedIndex];
           if (row.type === 'thread' && row.thread.status === 'open') {
             e.preventDefault();
-            onResolveThread(row.thread.id);
+            resolveThread(row.thread.id);
           }
           break;
         }
@@ -377,260 +372,262 @@ export const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewe
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [focusedIndex, navigableIndices, rows, review, focused, onStartReply, onResolveThread, onCancelReply]);
+  }, [focusedIndex, navigableIndices, rows, review, focused, startReply, resolveThread, cancelReply]);
 
   // Render function - only called for visible rows
-  const renderRow = useCallback((row: Row, idx: number) => {
-    if (row.type === 'file-header') {
-      return (
-        <div className="bg-gray-100 border-b border-gray-200 px-4 py-2 sticky top-0 z-10">
-          <span className="text-blue-600 font-semibold">{row.path}</span>
-        </div>
-      );
-    }
-
-    if (row.type === 'hunk-header') {
-      return (
-        <div className="bg-gray-50 text-gray-400 px-4 py-1 text-xs">
-          {row.header}
-        </div>
-      );
-    }
-
-    if (row.type === 'thread') {
-      const { thread } = row;
-      const isFocusedRow = idx === focusedIndex;
-      return (
-        <div
-          onClick={() => setFocusedIndex(idx)}
-          className={`ml-24 mr-4 my-2 bg-white border rounded-lg p-3 font-sans shadow-sm cursor-pointer transition-colors ${
-            isFocusedRow && focused
-              ? 'border-blue-500 ring-2 ring-blue-200'
-              : isFocusedRow
-                ? 'border-blue-300'
-                : 'border-gray-200 hover:border-gray-300'
-          }`}
-        >
-          <div className="text-xs text-gray-400 mb-2 font-mono">
-            {thread.file}:{thread.line_start}-{thread.line_end}
-            <span className="ml-2 text-gray-300">[{thread.id}]</span>
+  const renderRow = useCallback(
+    (row: Row, idx: number) => {
+      if (row.type === 'file-header') {
+        return (
+          <div className="bg-gray-100 border-b border-gray-200 px-4 py-2 sticky top-0 z-10">
+            <span className="text-blue-600 font-semibold">{row.path}</span>
           </div>
-          <div className="space-y-2">
-            {thread.comments.map((comment, cidx) => (
-              <div
-                key={cidx}
-                className={`text-sm ${
-                  comment.author === 'claude'
-                    ? 'bg-purple-50 border-l-2 border-purple-400 pl-2 py-1'
-                    : ''
-                }`}
-              >
-                <span
-                  className={`text-xs font-semibold ${
-                    comment.author === 'claude' ? 'text-purple-600' : 'text-blue-600'
+        );
+      }
+
+      if (row.type === 'hunk-header') {
+        return (
+          <div className="bg-gray-50 text-gray-400 px-4 py-1 text-xs">{row.header}</div>
+        );
+      }
+
+      if (row.type === 'thread') {
+        const { thread } = row;
+        const isFocusedRow = idx === focusedIndex;
+        return (
+          <div
+            onClick={() => setFocusedIndex(idx)}
+            className={`ml-24 mr-4 my-2 bg-white border rounded-lg p-3 font-sans shadow-sm cursor-pointer transition-colors ${
+              isFocusedRow && focused
+                ? 'border-blue-500 ring-2 ring-blue-200'
+                : isFocusedRow
+                  ? 'border-blue-300'
+                  : 'border-gray-200 hover:border-gray-300'
+            }`}
+          >
+            <div className="text-xs text-gray-400 mb-2 font-mono">
+              {thread.file}:{thread.line_start}-{thread.line_end}
+              <span className="ml-2 text-gray-300">[{thread.id}]</span>
+            </div>
+            <div className="space-y-2">
+              {thread.comments.map((comment, cidx) => (
+                <div
+                  key={cidx}
+                  className={`text-sm ${
+                    comment.author === 'claude'
+                      ? 'bg-purple-50 border-l-2 border-purple-400 pl-2 py-1'
+                      : ''
                   }`}
                 >
-                  {comment.author}:
-                </span>{' '}
-                <span className="text-gray-700">{comment.text}</span>
-              </div>
-            ))}
-          </div>
+                  <span
+                    className={`text-xs font-semibold ${
+                      comment.author === 'claude' ? 'text-purple-600' : 'text-blue-600'
+                    }`}
+                  >
+                    {comment.author}:
+                  </span>{' '}
+                  <span className="text-gray-700">{comment.text}</span>
+                </div>
+              ))}
+            </div>
 
-          {/* Actions for focused thread - only when diff panel is focused */}
-          {isFocusedRow && focused && thread.status === 'open' && (
-            <div className="mt-3 pt-3 border-t border-gray-100">
-              {replyingToThread ? (
-                <>
-                  <textarea
-                    ref={replyTextareaRef}
-                    value={replyText}
-                    onChange={(e) => onReplyTextChange(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
-                        if (replyText.trim()) onReplySubmit(thread.id);
-                      } else if (e.key === 'Escape') {
-                        onCancelReply();
-                      }
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                    placeholder="Reply... (Enter to send, Esc to cancel)"
-                    className="w-full bg-gray-50 border border-gray-200 rounded p-2 text-sm resize-none"
-                    rows={2}
-                  />
-                  <div className="flex justify-between mt-2">
+            {/* Actions for focused thread - only when diff panel is focused */}
+            {isFocusedRow && focused && thread.status === 'open' && (
+              <div className="mt-3 pt-3 border-t border-gray-100">
+                {replyingToThread ? (
+                  <>
+                    <textarea
+                      ref={replyTextareaRef}
+                      value={replyText}
+                      onChange={(e) => setReplyText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          if (replyText.trim()) submitReply(thread.id);
+                        } else if (e.key === 'Escape') {
+                          cancelReply();
+                        }
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      placeholder="Reply... (Enter to send, Esc to cancel)"
+                      className="w-full bg-gray-50 border border-gray-200 rounded p-2 text-sm resize-none"
+                      rows={2}
+                    />
+                    <div className="flex justify-between mt-2">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          cancelReply();
+                        }}
+                        className="px-2 py-1 text-xs text-gray-500 hover:text-gray-700"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (replyText.trim()) submitReply(thread.id);
+                        }}
+                        disabled={!replyText.trim() || submittingReply}
+                        className="px-3 py-1 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50"
+                      >
+                        {submittingReply ? '...' : 'Send'}
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex justify-between items-center">
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        onCancelReply();
+                        resolveThread(thread.id);
                       }}
-                      className="px-2 py-1 text-xs text-gray-500 hover:text-gray-700"
+                      className="px-2 py-1 text-xs text-green-600 hover:text-green-700 hover:bg-green-100 rounded"
                     >
-                      Cancel
+                      Resolve
                     </button>
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (replyText.trim()) onReplySubmit(thread.id);
+                        startReply(thread.id);
                       }}
-                      disabled={!replyText.trim() || submittingReply}
-                      className="px-3 py-1 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50"
+                      className="px-3 py-1 text-sm text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded"
                     >
-                      {submittingReply ? '...' : 'Send'}
+                      Reply
                     </button>
                   </div>
-                </>
-              ) : (
-                <div className="flex justify-between items-center">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onResolveThread(thread.id);
-                    }}
-                    className="px-2 py-1 text-xs text-green-600 hover:text-green-700 hover:bg-green-100 rounded"
-                  >
-                    Resolve
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onStartReply(thread.id);
-                    }}
-                    className="px-3 py-1 text-sm text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded"
-                  >
-                    Reply
-                  </button>
-                </div>
-              )}
+                )}
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      if (row.type === 'comment-editor') {
+        return (
+          <div className="ml-24 mr-4 my-2 bg-white border border-blue-400 rounded-lg p-3 font-sans shadow-sm ring-2 ring-blue-200">
+            <div className="text-xs text-gray-500 mb-2">
+              New comment on lines {row.lineStart}-{row.lineEnd}
             </div>
-          )}
-        </div>
-      );
-    }
-
-    if (row.type === 'comment-editor') {
-      return (
-        <div className="ml-24 mr-4 my-2 bg-white border border-blue-400 rounded-lg p-3 font-sans shadow-sm ring-2 ring-blue-200">
-          <div className="text-xs text-gray-500 mb-2">
-            New comment on lines {row.lineStart}-{row.lineEnd}
-          </div>
-          <textarea
-            ref={textareaRef}
-            value={commentText}
-            onChange={(e) => setCommentText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                if (commentText.trim()) handleSubmitComment();
-              } else if (e.key === 'Escape') {
-                setSelectedLines(null);
-                setCommentText('');
-              }
-            }}
-            placeholder="Add your comment... (Enter to submit, Esc to cancel)"
-            className="w-full bg-gray-50 border border-gray-200 rounded p-2 text-sm resize-none"
-            rows={3}
-          />
-          <div className="flex justify-end gap-2 mt-2">
-            <button
-              onClick={() => {
-                setSelectedLines(null);
-                setCommentText('');
+            <textarea
+              ref={textareaRef}
+              value={commentText}
+              onChange={(e) => setCommentText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  if (commentText.trim()) handleSubmitComment();
+                } else if (e.key === 'Escape') {
+                  setSelectedLines(null);
+                  setCommentText('');
+                }
               }}
-              className="px-3 py-1 text-sm text-gray-500 hover:text-gray-700"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleSubmitComment}
-              disabled={!commentText.trim() || submitting}
-              className="px-3 py-1 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50"
-            >
-              {submitting ? 'Adding...' : 'Add Comment'}
-            </button>
+              placeholder="Add your comment... (Enter to submit, Esc to cancel)"
+              className="w-full bg-gray-50 border border-gray-200 rounded p-2 text-sm resize-none"
+              rows={3}
+            />
+            <div className="flex justify-end gap-2 mt-2">
+              <button
+                onClick={() => {
+                  setSelectedLines(null);
+                  setCommentText('');
+                }}
+                className="px-3 py-1 text-sm text-gray-500 hover:text-gray-700"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSubmitComment}
+                disabled={!commentText.trim() || submitting}
+                className="px-3 py-1 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50"
+              >
+                {submitting ? 'Adding...' : 'Add Comment'}
+              </button>
+            </div>
           </div>
+        );
+      }
+
+      // line row
+      const { file, line } = row;
+      const lineNum = line.newLineNum ?? line.oldLineNum ?? 0;
+      const hasThread = linesWithThreads.has(`${file}:${lineNum}`);
+      // Only highlight selection on lines with newLineNum to avoid duplicates
+      const selected =
+        selectedLines &&
+        selectedLines.file === file &&
+        line.newLineNum !== undefined &&
+        line.newLineNum >= selectedLines.start &&
+        line.newLineNum <= selectedLines.end;
+      const isFocusedLine = idx === focusedIndex;
+      // Only allow clicking on lines with newLineNum (not pure deletions)
+      const canClick = review && line.newLineNum !== undefined && line.newLineNum > 0;
+
+      return (
+        <div
+          onClick={() => canClick && handleLineClick(file, line.newLineNum!)}
+          className={`flex border-l-2 ${
+            isFocusedLine && focused
+              ? 'bg-blue-100'
+              : isFocusedLine
+                ? 'bg-blue-50'
+                : line.type === 'add'
+                  ? 'bg-green-50'
+                  : line.type === 'delete'
+                    ? 'bg-red-50'
+                    : ''
+          } ${selected ? 'bg-blue-200 ring-1 ring-blue-400' : ''} ${
+            hasThread ? 'border-amber-400' : 'border-transparent'
+          } ${canClick && !isFocusedLine ? 'cursor-pointer hover:bg-gray-100' : ''}`}
+        >
+          <span className="w-12 text-right pr-2 select-none shrink-0 text-gray-400">
+            {line.oldLineNum ?? ''}
+          </span>
+          <span className="w-12 text-right pr-4 select-none border-r border-gray-200 shrink-0 text-gray-400">
+            {line.newLineNum ?? ''}
+          </span>
+          <span className="pl-4 whitespace-pre flex-1">
+            <span
+              className={`${
+                line.type === 'add'
+                  ? 'text-green-700'
+                  : line.type === 'delete'
+                    ? 'text-red-700'
+                    : ''
+              }`}
+            >
+              {line.type === 'add' && '+'}
+              {line.type === 'delete' && '-'}
+              {line.type === 'context' && ' '}
+              {line.content}
+            </span>
+          </span>
         </div>
       );
-    }
+    },
+    [
+      focusedIndex,
+      selectedLines,
+      linesWithThreads,
+      review,
+      handleLineClick,
+      focused,
+      commentText,
+      submitting,
+      handleSubmitComment,
+      replyingToThread,
+      startReply,
+      submitReply,
+      cancelReply,
+      resolveThread,
+      replyText,
+      setReplyText,
+      submittingReply,
+    ]
+  );
 
-    // line row
-    const { file, line } = row;
-    const lineNum = line.newLineNum ?? line.oldLineNum ?? 0;
-    const hasThread = linesWithThreads.has(`${file}:${lineNum}`);
-    const selected = selectedLines && selectedLines.file === file &&
-                     lineNum >= selectedLines.start && lineNum <= selectedLines.end;
-    const isFocusedLine = idx === focusedIndex;
-
-    return (
-      <div
-        onClick={() => lineNum > 0 && handleLineClick(file, lineNum)}
-        className={`flex border-l-2 ${
-          isFocusedLine && focused
-            ? 'bg-blue-100'
-            : isFocusedLine
-              ? 'bg-blue-50'
-              : line.type === 'add'
-                ? 'bg-green-50'
-                : line.type === 'delete'
-                  ? 'bg-red-50'
-                  : ''
-        } ${
-          selected ? 'bg-blue-200 ring-1 ring-blue-400' : ''
-        } ${
-          hasThread ? 'border-amber-400' : 'border-transparent'
-        } ${
-          review && !isFocusedLine ? 'cursor-pointer hover:bg-gray-100' : ''
-        }`}
-      >
-        <span className="w-12 text-right pr-2 select-none shrink-0 text-gray-400">
-          {line.oldLineNum ?? ''}
-        </span>
-        <span className="w-12 text-right pr-4 select-none border-r border-gray-200 shrink-0 text-gray-400">
-          {line.newLineNum ?? ''}
-        </span>
-        <span className="pl-4 whitespace-pre flex-1">
-          <span className={`${
-            line.type === 'add'
-              ? 'text-green-700'
-              : line.type === 'delete'
-                ? 'text-red-700'
-                : ''
-          }`}>
-            {line.type === 'add' && '+'}
-            {line.type === 'delete' && '-'}
-            {line.type === 'context' && ' '}
-            {line.content}
-          </span>
-        </span>
-      </div>
-    );
-  }, [
-    focusedIndex,
-    selectedLines,
-    linesWithThreads,
-    review,
-    handleLineClick,
-    focused,
-    commentText,
-    submitting,
-    handleSubmitComment,
-    replyingToThread,
-    onStartReply,
-    onReplySubmit,
-    onCancelReply,
-    onResolveThread,
-    replyText,
-    onReplyTextChange,
-    submittingReply,
-  ]);
-
-  if (rows.length === 0) {
-    return (
-      <div className="p-8 text-center text-gray-400">
-        No diff content
-      </div>
-    );
+  if (!diff || rows.length === 0) {
+    return <div className="p-8 text-center text-gray-400">No diff content</div>;
   }
 
   return (
@@ -641,7 +638,8 @@ export const DiffViewer = forwardRef<DiffViewerHandle, Props>(function DiffViewe
 
       {/* Key bindings hint */}
       <div className="fixed bottom-4 left-4 text-xs text-gray-400 z-20">
-        Tab: switch panel | j/k: navigate | ctrl-d/u: page | c: comment | r: reply | x: resolve | g/G: top/bottom
+        Tab: switch panel | j/k: navigate | ctrl-d/u: page | c: comment | r: reply | x: resolve |
+        g/G: top/bottom
       </div>
     </div>
   );
