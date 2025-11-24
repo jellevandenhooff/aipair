@@ -32,9 +32,15 @@ export default function App() {
       fetchDiff(selectedChange.change_id),
       fetchReview(selectedChange.change_id),
     ])
-      .then(([d, r]) => {
+      .then(async ([d, r]) => {
         setDiff(d);
-        setReview(r);
+        // Auto-create review if it doesn't exist
+        if (!r) {
+          const newReview = await createReview(selectedChange.change_id);
+          setReview(newReview);
+        } else {
+          setReview(r);
+        }
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
@@ -81,16 +87,6 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [changes, selectedChange, focusedPanel]);
 
-  const handleStartReview = useCallback(async () => {
-    if (!selectedChange) return;
-    try {
-      const r = await createReview(selectedChange.change_id);
-      setReview(r);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to create review');
-    }
-  }, [selectedChange]);
-
   const handleReviewUpdate = useCallback((updatedReview: Review) => {
     setReview(updatedReview);
   }, []);
@@ -134,21 +130,11 @@ export default function App() {
         <main className="flex-1 flex flex-col overflow-hidden">
           {selectedChange && diff ? (
             <>
-              <div className="bg-gray-100 border-b border-gray-200 p-4 flex items-center justify-between">
-                <div>
-                  <h2 className="font-mono text-sm text-gray-500">
-                    {selectedChange.change_id.slice(0, 12)}
-                  </h2>
-                  <p className="text-lg">{selectedChange.description || '(no description)'}</p>
-                </div>
-                {!review && (
-                  <button
-                    onClick={handleStartReview}
-                    className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded"
-                  >
-                    Start Review
-                  </button>
-                )}
+              <div className="bg-gray-100 border-b border-gray-200 p-4">
+                <h2 className="font-mono text-sm text-gray-500">
+                  {selectedChange.change_id.slice(0, 12)}
+                </h2>
+                <p className="text-lg">{selectedChange.description || '(no description)'}</p>
               </div>
 
               <div className="flex-1 flex overflow-hidden">
