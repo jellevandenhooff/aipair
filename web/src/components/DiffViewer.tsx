@@ -213,6 +213,13 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
     }
   }, [replyingToThread, focused]);
 
+  // Scroll to focused line when panel becomes focused
+  useEffect(() => {
+    if (focused && listRef.current) {
+      listRef.current.scrollToIndex(focusedIndex, { align: 'center' });
+    }
+  }, [focused]);
+
   const handleLineClick = useCallback(
     (file: string, lineNum: number) => {
       if (!review) return;

@@ -12,4 +12,6 @@
 
 - Also have code viewer where we can comment on current code
 
+- Tests? End-to-end or UI?
+
 - Better guidance/something so Claude puts things in scoped, reviewable changes
