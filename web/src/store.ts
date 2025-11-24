@@ -9,6 +9,7 @@ import {
   createReview,
   replyToThread,
   resolveThread,
+  reopenThread,
 } from './api';
 
 type FocusedPanel = 'changes' | 'diff' | 'threads';
@@ -47,7 +48,7 @@ interface AppState {
   cancelReply: () => void;
   setReplyText: (text: string) => void;
   submitReply: (threadId: string) => Promise<void>;
-  resolveThread: (threadId: string) => Promise<void>;
+  toggleThreadStatus: (threadId: string) => Promise<void>;
 
   // Navigation helpers
   navigateChanges: (direction: 'up' | 'down') => void;
@@ -171,15 +172,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  resolveThread: async (threadId) => {
+  toggleThreadStatus: async (threadId) => {
     const { review } = get();
     if (!review) return;
 
+    const thread = review.threads.find((t) => t.id === threadId);
+    if (!thread) return;
+
     try {
-      const updatedReview = await resolveThread(review.change_id, threadId);
+      const updatedReview =
+        thread.status === 'open'
+          ? await resolveThread(review.change_id, threadId)
+          : await reopenThread(review.change_id, threadId);
       set({ review: updatedReview });
     } catch (e) {
-      console.error('Failed to resolve:', e);
+      console.error('Failed to toggle thread status:', e);
     }
   },
 

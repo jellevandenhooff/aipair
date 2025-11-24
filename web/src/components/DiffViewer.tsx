@@ -134,7 +134,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
   const cancelReply = useAppStore((s) => s.cancelReply);
   const setReplyText = useAppStore((s) => s.setReplyText);
   const submitReply = useAppStore((s) => s.submitReply);
-  const resolveThread = useAppStore((s) => s.resolveThread);
+  const toggleThreadStatus = useAppStore((s) => s.toggleThreadStatus);
 
   // Local state
   const [selectedLines, setSelectedLines] = useState<{ file: string; start: number; end: number } | null>(null);
@@ -359,11 +359,11 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
           break;
         }
         case 'x': {
-          // Resolve selected thread (must be focused on thread row)
+          // Toggle thread status (resolve/reopen)
           const row = rows[focusedIndex];
-          if (row.type === 'thread' && row.thread.status === 'open') {
+          if (row.type === 'thread') {
             e.preventDefault();
-            resolveThread(row.thread.id);
+            toggleThreadStatus(row.thread.id);
           }
           break;
         }
@@ -372,7 +372,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [focusedIndex, navigableIndices, rows, review, focused, startReply, resolveThread, cancelReply]);
+  }, [focusedIndex, navigableIndices, rows, review, focused, startReply, toggleThreadStatus, cancelReply]);
 
   // Render function - only called for visible rows
   const renderRow = useCallback(
@@ -432,9 +432,19 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
             </div>
 
             {/* Actions for focused thread - only when diff panel is focused */}
-            {isFocusedRow && focused && thread.status === 'open' && (
+            {isFocusedRow && focused && (
               <div className="mt-3 pt-3 border-t border-gray-100">
-                {replyingToThread ? (
+                {thread.status === 'resolved' ? (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleThreadStatus(thread.id);
+                    }}
+                    className="px-2 py-1 text-xs text-amber-600 hover:text-amber-700 hover:bg-amber-50 rounded"
+                  >
+                    Reopen
+                  </button>
+                ) : replyingToThread ? (
                   <>
                     <textarea
                       ref={replyTextareaRef}
@@ -480,7 +490,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        resolveThread(thread.id);
+                        toggleThreadStatus(thread.id);
                       }}
                       className="px-2 py-1 text-xs text-green-600 hover:text-green-700 hover:bg-green-100 rounded"
                     >
@@ -619,7 +629,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
       startReply,
       submitReply,
       cancelReply,
-      resolveThread,
+      toggleThreadStatus,
       replyText,
       setReplyText,
       submittingReply,

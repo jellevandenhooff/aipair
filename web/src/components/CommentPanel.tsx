@@ -129,7 +129,7 @@ const ThreadCard = forwardRef<HTMLDivElement, ThreadCardProps>(function ThreadCa
   const cancelReply = useAppStore((s) => s.cancelReply);
   const setReplyText = useAppStore((s) => s.setReplyText);
   const submitReply = useAppStore((s) => s.submitReply);
-  const resolveThread = useAppStore((s) => s.resolveThread);
+  const toggleThreadStatus = useAppStore((s) => s.toggleThreadStatus);
 
   const selected = selectedThreadId === thread.id;
   const replying = replyingToThread && selected && focused;
@@ -172,9 +172,19 @@ const ThreadCard = forwardRef<HTMLDivElement, ThreadCardProps>(function ThreadCa
       </div>
 
       {/* Actions for selected thread */}
-      {selected && thread.status === 'open' && (
+      {selected && (
         <div className="mt-3 pt-3 border-t border-gray-100">
-          {replying ? (
+          {thread.status === 'resolved' ? (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleThreadStatus(thread.id);
+              }}
+              className="px-2 py-1 text-xs text-amber-600 hover:text-amber-700 hover:bg-amber-50 rounded"
+            >
+              Reopen
+            </button>
+          ) : replying ? (
             <>
               <textarea
                 ref={replyInputRef}
@@ -219,7 +229,7 @@ const ThreadCard = forwardRef<HTMLDivElement, ThreadCardProps>(function ThreadCa
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  resolveThread(thread.id);
+                  toggleThreadStatus(thread.id);
                 }}
                 className="px-2 py-1 text-xs text-green-600 hover:text-green-700 hover:bg-green-50 rounded"
               >

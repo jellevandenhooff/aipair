@@ -17,7 +17,7 @@ export default function App() {
   const cyclePanel = useAppStore((s) => s.cyclePanel);
   const navigateChanges = useAppStore((s) => s.navigateChanges);
   const navigateThreads = useAppStore((s) => s.navigateThreads);
-  const resolveThread = useAppStore((s) => s.resolveThread);
+  const toggleThreadStatus = useAppStore((s) => s.toggleThreadStatus);
   const clearError = useAppStore((s) => s.clearError);
 
   const diffViewerRef = useRef<DiffViewerHandle>(null);
@@ -62,14 +62,14 @@ export default function App() {
           navigateThreads('up');
         } else if (e.key === 'x' && selectedThreadId) {
           e.preventDefault();
-          resolveThread(selectedThreadId);
+          toggleThreadStatus(selectedThreadId);
         }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [focusedPanel, changes.length, cyclePanel, navigateChanges, navigateThreads, resolveThread]);
+  }, [focusedPanel, changes.length, cyclePanel, navigateChanges, navigateThreads, toggleThreadStatus]);
 
   if (error) {
     return (

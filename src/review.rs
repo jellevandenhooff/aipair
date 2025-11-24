@@ -231,6 +231,22 @@ impl ReviewStore {
         self.save(&review)?;
         Ok(review)
     }
+
+    pub fn reopen_thread(&self, change_id: &str, thread_id: &str) -> Result<Review> {
+        let mut review = self
+            .get(change_id)?
+            .ok_or_else(|| anyhow::anyhow!("Review not found for change: {}", change_id))?;
+
+        let thread = review
+            .threads
+            .iter_mut()
+            .find(|t| t.id == thread_id)
+            .ok_or_else(|| anyhow::anyhow!("Thread not found: {}", thread_id))?;
+
+        thread.status = ThreadStatus::Open;
+        self.save(&review)?;
+        Ok(review)
+    }
 }
 
 #[cfg(test)]

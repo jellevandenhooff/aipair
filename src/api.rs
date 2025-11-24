@@ -39,6 +39,7 @@ pub async fn serve(port: u16) -> anyhow::Result<()> {
         .route("/api/changes/{change_id}/comments", post(add_comment))
         .route("/api/changes/{change_id}/threads/{thread_id}/reply", post(reply_to_thread))
         .route("/api/changes/{change_id}/threads/{thread_id}/resolve", post(resolve_thread))
+        .route("/api/changes/{change_id}/threads/{thread_id}/reopen", post(reopen_thread))
         .with_state(state)
         .layer(cors);
 
@@ -170,6 +171,16 @@ async fn resolve_thread(
     Path((change_id, thread_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     match state.store.resolve_thread(&change_id, &thread_id) {
+        Ok(review) => Json(ReviewResponse { review: Some(review) }).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn reopen_thread(
+    State(state): State<Arc<AppState>>,
+    Path((change_id, thread_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    match state.store.reopen_thread(&change_id, &thread_id) {
         Ok(review) => Json(ReviewResponse { review: Some(review) }).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }

@@ -85,3 +85,15 @@ export async function resolveThread(
   const data = await res.json();
   return data.review;
 }
+
+export async function reopenThread(
+  changeId: string,
+  threadId: string
+): Promise<Review> {
+  const res = await fetch(`${API_BASE}/changes/${changeId}/threads/${threadId}/reopen`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(`Failed to reopen: ${res.statusText}`);
+  const data = await res.json();
+  return data.review;
+}
