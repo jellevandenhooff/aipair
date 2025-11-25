@@ -14,6 +14,7 @@ export default function App() {
   const focusedPanel = useAppStore((s) => s.focusedPanel);
 
   const fetchChanges = useAppStore((s) => s.fetchChanges);
+  const refreshData = useAppStore((s) => s.refreshData);
   const setFocusedPanel = useAppStore((s) => s.setFocusedPanel);
   const cyclePanel = useAppStore((s) => s.cyclePanel);
   const navigateChanges = useAppStore((s) => s.navigateChanges);
@@ -27,6 +28,14 @@ export default function App() {
   useEffect(() => {
     fetchChanges();
   }, [fetchChanges]);
+
+  // Poll for updates every 3 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      refreshData();
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [refreshData]);
 
   // Keyboard navigation
   useEffect(() => {

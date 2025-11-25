@@ -40,6 +40,7 @@ interface AppState {
   // Actions
   fetchChanges: () => Promise<void>;
   selectChange: (change: Change | null) => Promise<void>;
+  refreshData: () => Promise<void>;
   setFocusedPanel: (panel: FocusedPanel) => void;
   cyclePanel: (reverse: boolean) => void;
   setSelectedThreadId: (id: string | null) => void;
@@ -120,6 +121,35 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     } catch (e) {
       set({ error: (e as Error).message, loading: false });
+    }
+  },
+
+  refreshData: async () => {
+    const { selectedChange } = get();
+
+    try {
+      // Always refresh changes list
+      const changes = await apiFetchChanges();
+      set({ changes });
+
+      // If a change is selected, refresh its diff and review
+      if (selectedChange) {
+        // Check if the selected change still exists
+        const stillExists = changes.some((c) => c.change_id === selectedChange.change_id);
+        if (!stillExists) {
+          set({ selectedChange: null, diff: null, review: null, selectedThreadId: null });
+          return;
+        }
+
+        const [diff, review] = await Promise.all([
+          fetchDiff(selectedChange.change_id),
+          fetchReview(selectedChange.change_id),
+        ]);
+        set({ diff, review });
+      }
+    } catch (e) {
+      // Silently ignore refresh errors to avoid spamming the user
+      console.error('Refresh failed:', e);
     }
   },
 
