@@ -251,13 +251,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       ? changes.findIndex((c) => c.change_id === selectedChange.change_id)
       : -1;
 
-    let nextIdx: number;
-    if (direction === 'down') {
-      nextIdx = currentIdx < 0 || currentIdx >= changes.length - 1 ? 0 : currentIdx + 1;
-    } else {
-      nextIdx = currentIdx <= 0 ? changes.length - 1 : currentIdx - 1;
-    }
+    const nextIdx =
+      direction === 'down'
+        ? Math.min(currentIdx + 1, changes.length - 1)
+        : Math.max(currentIdx - 1, 0);
 
+    if (nextIdx === currentIdx) return;
     get().selectChange(changes[nextIdx]);
   },
 

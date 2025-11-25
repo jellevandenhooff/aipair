@@ -1,23 +1,24 @@
+import { useRef, useEffect, forwardRef } from 'react';
 import { useAppStore } from '../store';
 import type { Change } from '../api';
 
-function ChangeItem({
-  change,
-  isSelected,
-  focused,
-  isMain,
-  onClick,
-}: {
+interface ChangeItemProps {
   change: Change;
   isSelected: boolean;
   focused: boolean;
   isMain: boolean;
   onClick: () => void;
-}) {
+}
+
+const ChangeItem = forwardRef<HTMLButtonElement, ChangeItemProps>(function ChangeItem(
+  { change, isSelected, focused, isMain, onClick },
+  ref
+) {
   return (
     <button
+      ref={ref}
       onClick={onClick}
-      className={`w-full text-left p-4 transition-colors ${
+      className={`w-full text-left px-3 py-2 transition-colors ${
         isSelected && focused
           ? 'bg-blue-100 hover:bg-blue-100 border-l-2 border-blue-500'
           : isSelected
@@ -40,13 +41,12 @@ function ChangeItem({
           </span>
         )}
       </div>
-      <div className="mt-1 text-sm truncate">
+      <div className="text-sm truncate">
         {change.description || <span className="text-gray-400 italic">(no description)</span>}
       </div>
-      <div className="mt-1 text-xs text-gray-400">{change.author}</div>
     </button>
   );
-}
+});
 
 export function ChangeList() {
   const changes = useAppStore((s) => s.changes);
@@ -55,12 +55,22 @@ export function ChangeList() {
   const focused = useAppStore((s) => s.focusedPanel === 'changes');
   const selectChange = useAppStore((s) => s.selectChange);
 
+  const changeRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+
+  // Scroll selected change into view when it changes
+  useEffect(() => {
+    if (selectedChange && focused) {
+      const el = changeRefs.current.get(selectedChange.change_id);
+      el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [selectedChange?.change_id, focused]);
+
   if (loading && changes.length === 0) {
-    return <div className="p-4 text-gray-400">Loading changes...</div>;
+    return <div className="p-3 text-gray-400 text-sm">Loading changes...</div>;
   }
 
   if (changes.length === 0) {
-    return <div className="p-4 text-gray-400">No changes found</div>;
+    return <div className="p-3 text-gray-400 text-sm">No changes found</div>;
   }
 
   // Find the change that main points to (first merged change)
@@ -75,6 +85,10 @@ export function ChangeList() {
         return (
           <ChangeItem
             key={change.change_id}
+            ref={(el) => {
+              if (el) changeRefs.current.set(change.change_id, el);
+              else changeRefs.current.delete(change.change_id);
+            }}
             change={change}
             isSelected={isSelected}
             focused={focused}
