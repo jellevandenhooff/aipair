@@ -1,8 +1,9 @@
 # Review loop
-- Slash command/MCP for Claude to fetch and respond to comments
 - "Request review" button in UI (signals Claude to check)
 - Track unresolved thread count per change
 - Live updates
+- MCP server doesn't reload when binary is rebuilt (need to restart Claude Code)
+- Store commit_id in Review struct (so we know which revision feedback applies to)
 
 # Small changes workflow
 - Guide Claude to work in small chunks, wait for review

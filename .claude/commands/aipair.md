@@ -1,8 +1,15 @@
 Check for review feedback and respond to comments.
 
-Use the `mcp__aipair__get_pending_feedback` tool to see open threads.
+Use `mcp__aipair__get_pending_feedback` to see open threads with code context.
 
 For each thread:
-- If you've addressed the feedback in code, explain briefly and resolve
-- If you disagree or need clarification, reply explaining your reasoning
+1. First, do the work to address the feedback (if applicable)
+2. IMPORTANT: Double-check that ALL work is actually complete before responding
+3. Then use `mcp__aipair__respond_to_thread` to reply
+
+Guidelines:
+- VERIFY your work is done before responding - re-read the feedback and confirm each point was addressed
+- Only set resolve=true if you are CERTAIN the feedback was addressed as the user intended
+- If you disagree or need clarification, reply explaining your reasoning (don't resolve)
+- If feedback was surprising and might reoccur, document it in project guidelines (CLAUDE.md)
 - Be concise

@@ -1,5 +1,4 @@
 mod api;
-mod cli;
 mod jj;
 mod mcp;
 mod review;
@@ -22,11 +21,6 @@ enum Commands {
         #[arg(short, long, default_value = "3000")]
         port: u16,
     },
-    /// Review commands (for Claude to use)
-    Review {
-        #[command(subcommand)]
-        command: cli::ReviewCommands,
-    },
     /// Run as MCP server (for Claude Code integration)
     Mcp,
 }
@@ -45,9 +39,6 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Serve { port } => {
             api::serve(port).await?;
-        }
-        Commands::Review { command } => {
-            cli::handle_review_command(command).await?;
         }
         Commands::Mcp => {
             mcp::run_mcp_server().await?;
