@@ -8,6 +8,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::trace::TraceLayer;
 use tracing::info;
 
 use crate::jj::Jj;
@@ -30,6 +31,9 @@ pub async fn serve(port: u16) -> anyhow::Result<()> {
         .allow_methods(Any)
         .allow_headers(Any);
 
+    // MCP server over HTTP (stateless, merged before adding app state)
+    let mcp_router = crate::mcp::create_mcp_router();
+
     let app = Router::new()
         .route("/api/health", get(health))
         .route("/api/changes", get(list_changes))
@@ -42,10 +46,13 @@ pub async fn serve(port: u16) -> anyhow::Result<()> {
         .route("/api/changes/{change_id}/threads/{thread_id}/reopen", post(reopen_thread))
         .route("/api/changes/{change_id}/merge", post(merge_change))
         .with_state(state)
-        .layer(cors);
+        .merge(mcp_router)
+        .layer(cors)
+        .layer(TraceLayer::new_for_http());
 
     let addr = format!("0.0.0.0:{}", port);
     info!("Starting server on http://localhost:{}", port);
+    info!("MCP endpoint available at http://localhost:{}/mcp", port);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
@@ -410,9 +417,9 @@ async fn merge_change(
         .into_response();
     }
 
-    // Get current commit_id for this change
-    let current_commit_id = match state.jj.get_change(&change_id) {
-        Ok(change) => change.commit_id,
+    // Get current change info
+    let change = match state.jj.get_change(&change_id) {
+        Ok(change) => change,
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -424,29 +431,44 @@ async fn merge_change(
                 .into_response();
         }
     };
+    let current_commit_id = change.commit_id.clone();
+
+    // Check for empty commit message (unless force)
+    if !req.force && change.description.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(MergeResponse {
+                success: false,
+                message: "Cannot merge: commit message is empty. Set a description with `jj describe -m \"...\"`".to_string(),
+            }),
+        )
+            .into_response();
+    }
 
     // Check for pending changes and open threads (unless force)
     if !req.force {
-        if let Ok(Some(review)) = state.store.get(&change_id) {
-            // Check for pending changes
-            let has_pending = match review.revisions.last() {
-                Some(last_rev) => current_commit_id != last_rev.commit_id,
-                None => true, // Has commit but no revisions recorded
-            };
+        let review = state.store.get(&change_id).ok().flatten();
 
-            if has_pending {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(MergeResponse {
-                        success: false,
-                        message: "Cannot merge: pending changes not yet recorded as a revision. \
-                                  Use force=true to override."
-                            .to_string(),
-                    }),
-                )
-                .into_response();
-            }
+        // Check for pending changes: either no review/revisions, or current commit differs from last revision
+        let has_pending = match review.as_ref().and_then(|r| r.revisions.last()) {
+            Some(last_rev) => current_commit_id != last_rev.commit_id,
+            None => true, // No review or no revisions recorded = pending
+        };
 
+        if has_pending {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(MergeResponse {
+                    success: false,
+                    message: "Cannot merge: pending changes not yet recorded as a revision. \
+                              Use force=true to override."
+                        .to_string(),
+                }),
+            )
+            .into_response();
+        }
+
+        if let Some(review) = review {
             let open_threads: Vec<_> = review
                 .threads
                 .iter()

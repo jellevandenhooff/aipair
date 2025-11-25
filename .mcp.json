@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "aipair": {
-      "command": "./target/debug/aipair",
-      "args": ["mcp"]
+      "type": "http",
+      "url": "http://localhost:3000/mcp"
     }
   }
 }

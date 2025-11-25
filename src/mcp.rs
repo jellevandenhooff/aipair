@@ -198,10 +198,20 @@ impl ServerHandler for ReviewService {
     }
 }
 
-pub async fn run_mcp_server() -> anyhow::Result<()> {
-    use rmcp::{transport::stdio, ServiceExt};
+/// Create an MCP service for HTTP transport, returning the router with the service nested
+pub fn create_mcp_router() -> axum::Router {
+    use rmcp::transport::streamable_http_server::{StreamableHttpService, StreamableHttpServerConfig, session::local::LocalSessionManager};
 
-    let service = ReviewService::new().serve(stdio()).await?;
-    service.waiting().await?;
-    Ok(())
+    let config = StreamableHttpServerConfig {
+        stateful_mode: false,  // Disable session requirements
+        ..Default::default()
+    };
+
+    let service = StreamableHttpService::new(
+        || Ok(ReviewService::new()),
+        LocalSessionManager::default().into(),
+        config,
+    );
+
+    axum::Router::new().nest_service("/mcp", service)
 }

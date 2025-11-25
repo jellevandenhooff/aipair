@@ -16,13 +16,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start the web server
+    /// Start the web server (includes MCP endpoint at /mcp)
     Serve {
         #[arg(short, long, default_value = "3000")]
         port: u16,
     },
-    /// Run as MCP server (for Claude Code integration)
-    Mcp,
 }
 
 #[tokio::main]
@@ -39,9 +37,6 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Serve { port } => {
             api::serve(port).await?;
-        }
-        Commands::Mcp => {
-            mcp::run_mcp_server().await?;
         }
     }
 
