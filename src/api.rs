@@ -57,12 +57,15 @@ async fn health() -> &'static str {
     "ok"
 }
 
-/// Change with merged status for API response
+/// Change with merged status and review info for API response
 #[derive(Serialize)]
 struct ChangeWithStatus {
     #[serde(flatten)]
     change: crate::jj::Change,
     merged: bool,
+    open_thread_count: usize,
+    revision_count: usize,
+    has_pending_changes: bool,
 }
 
 #[derive(Serialize)]
@@ -82,6 +85,13 @@ async fn list_changes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
 
+    // Load all reviews to get thread counts
+    let reviews = state.store.list().unwrap_or_default();
+    let review_map: std::collections::HashMap<_, _> = reviews
+        .into_iter()
+        .map(|r| (r.change_id.clone(), r))
+        .collect();
+
     // A change is merged if it appears at or after the main bookmark in the ancestor list
     // The list is ordered newest to oldest, so we find main's position and mark everything from there
     let main_idx = main_change_id
@@ -93,7 +103,37 @@ async fn list_changes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         .enumerate()
         .map(|(idx, change)| {
             let merged = main_idx.map(|mi| idx >= mi).unwrap_or(false);
-            ChangeWithStatus { change, merged }
+            let (open_thread_count, revision_count, has_pending_changes) = review_map
+                .get(&change.change_id)
+                .map(|r| {
+                    let open = r
+                        .threads
+                        .iter()
+                        .filter(|t| t.status == crate::review::ThreadStatus::Open)
+                        .count();
+                    // Pending if working_commit differs from last revision's commit
+                    let pending = match (r.working_commit_id.as_ref(), r.revisions.last()) {
+                        (Some(working), Some(last_rev)) => working != &last_rev.commit_id,
+                        (Some(_), None) => true, // Has working commit but no revisions
+                        _ => false,
+                    };
+                    (open, r.revisions.len(), pending)
+                })
+                .unwrap_or((0, 0, false));
+            // Also pending if current jj commit differs from working_commit_id
+            let has_pending_changes = has_pending_changes || review_map
+                .get(&change.change_id)
+                .map(|r| {
+                    r.working_commit_id.as_ref().map(|w| w != &change.commit_id).unwrap_or(false)
+                })
+                .unwrap_or(false);
+            ChangeWithStatus {
+                change,
+                merged,
+                open_thread_count,
+                revision_count,
+                has_pending_changes,
+            }
         })
         .collect();
 
@@ -145,7 +185,18 @@ async fn create_review(
     Json(req): Json<CreateReviewRequest>,
 ) -> impl IntoResponse {
     let base = req.base.as_deref().unwrap_or("@-");
-    match state.store.get_or_create(&change_id, base) {
+
+    // Get commit_id for this change
+    let commit_id = match state.jj.log(50) {
+        Ok(changes) => changes
+            .iter()
+            .find(|c| c.change_id == change_id)
+            .map(|c| c.commit_id.clone())
+            .unwrap_or_default(),
+        Err(_) => String::new(),
+    };
+
+    match state.store.get_or_create(&change_id, base, &commit_id) {
         Ok(review) => Json(ReviewResponse {
             review: Some(review),
         })
@@ -173,6 +224,16 @@ async fn add_comment(
     Path(change_id): Path<String>,
     Json(req): Json<AddCommentRequest>,
 ) -> impl IntoResponse {
+    // Get commit_id for this change
+    let commit_id = match state.jj.log(50) {
+        Ok(changes) => changes
+            .iter()
+            .find(|c| c.change_id == change_id)
+            .map(|c| c.commit_id.clone())
+            .unwrap_or_default(),
+        Err(_) => String::new(),
+    };
+
     match state.store.add_comment(
         &change_id,
         &req.file,
@@ -180,6 +241,7 @@ async fn add_comment(
         req.line_end,
         Author::User,
         &req.text,
+        &commit_id,
     ) {
         Ok((review, thread_id)) => Json(AddCommentResponse { review, thread_id }).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -253,9 +315,43 @@ async fn merge_change(
         .into_response();
     }
 
-    // Check if all threads are resolved (unless force)
+    // Get current commit_id for this change
+    let current_commit_id = match state.jj.get_change(&change_id) {
+        Ok(change) => change.commit_id,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(MergeResponse {
+                    success: false,
+                    message: format!("Failed to get change info: {}", e),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    // Check for pending changes and open threads (unless force)
     if !req.force {
         if let Ok(Some(review)) = state.store.get(&change_id) {
+            // Check for pending changes
+            let has_pending = match review.revisions.last() {
+                Some(last_rev) => current_commit_id != last_rev.commit_id,
+                None => true, // Has commit but no revisions recorded
+            };
+
+            if has_pending {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(MergeResponse {
+                        success: false,
+                        message: "Cannot merge: pending changes not yet recorded as a revision. \
+                                  Use force=true to override."
+                            .to_string(),
+                    }),
+                )
+                .into_response();
+            }
+
             let open_threads: Vec<_> = review
                 .threads
                 .iter()

@@ -264,6 +264,47 @@ impl Jj {
         Ok(Some(change_id))
     }
 
+    /// Get info about a specific change
+    pub fn get_change(&self, change_id: &str) -> Result<Change> {
+        let output = Command::new("jj")
+            .current_dir(&self.repo_path)
+            .args([
+                "log",
+                "--no-graph",
+                "-r",
+                change_id,
+                "-T",
+                r#"json(self) ++ "\t" ++ empty ++ "\n""#,
+            ])
+            .output()
+            .context("Failed to run jj log")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "jj log failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let stdout = String::from_utf8(output.stdout)?;
+        let line = stdout.lines().next().context("No output from jj log")?;
+        let (json_str, empty_str) = line
+            .rsplit_once('\t')
+            .context("Invalid jj log output format")?;
+
+        let jj_change: JjChange = serde_json::from_str(json_str)
+            .with_context(|| format!("Failed to parse jj log output: {json_str}"))?;
+
+        Ok(Change {
+            change_id: jj_change.change_id,
+            commit_id: jj_change.commit_id,
+            description: jj_change.description.trim_end().to_string(),
+            author: jj_change.author.email,
+            timestamp: jj_change.committer.timestamp,
+            empty: empty_str == "true",
+        })
+    }
+
     /// Move a bookmark to point to a specific change
     pub fn move_bookmark(&self, name: &str, change_id: &str) -> Result<()> {
         let output = Command::new("jj")

@@ -2,4 +2,4 @@
 import type { Comment } from "./Comment";
 import type { ThreadStatus } from "./ThreadStatus";
 
-export type Thread = { id: string, file: string, line_start: number, line_end: number, status: ThreadStatus, comments: Array<Comment>, };
+export type Thread = { id: string, file: string, line_start: number, line_end: number, status: ThreadStatus, comments: Array<Comment>, created_at_commit: string | null, created_at_revision: number | null, };

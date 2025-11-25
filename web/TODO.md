@@ -1,16 +1,18 @@
 # Review loop
-- "Request review" button in UI (signals Claude to check)
-- Track unresolved thread count per change
 - Live updates
 - MCP server doesn't reload when binary is rebuilt (need to restart Claude Code)
-- Store commit_id in Review struct (so we know which revision feedback applies to)
+
+# Revision tracking enhancements
+- Revision comparison UI (diff v1→v2 to see what changed between rounds)
+- Thread position tracking/relocation based on diffs (threads "float" to new locations)
+- Revision timeline panel showing history
+- "What's new since last review" banner
+- Preserve jj revision history (prevent GC of old commits)
 
 # Small changes workflow
 - Guide Claude to work in small chunks, wait for review
 - Guide Claude to use jj and to move changes
 - Change status: draft vs ready for review
-- Revision concept (v1 → v2 → v3 responding to feedback)
-- See comments move across changes/revisions
 - Approve and bump main
 
 ## Ideas for review guidelines
@@ -23,6 +25,7 @@
 - Handle race conditions in async store actions
 - Duplicate components for threads
 - Decentralize state: store.ts is accumulating too much (e.g., newCommentText, confirm logic). Consider isDirty ref pattern or component-level state with callbacks.
+- Consider removing line_end from Thread data model (we only use line_start now)
 
 # Friction
 - Put location in URL (for refreshing)

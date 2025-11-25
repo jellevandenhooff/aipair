@@ -40,6 +40,22 @@ const ChangeItem = forwardRef<HTMLButtonElement, ChangeItemProps>(function Chang
             empty
           </span>
         )}
+        {change.revision_count > 0 && (
+          <span className="text-xs bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded font-mono" title="Revision count">
+            v{change.revision_count}
+          </span>
+        )}
+        {change.has_pending_changes && (
+          <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded" title="Has uncommitted changes since last revision">
+            pending
+          </span>
+        )}
+        <span className="flex-1" />
+        {change.open_thread_count > 0 && (
+          <span className="text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded" title="Open threads">
+            {change.open_thread_count} open
+          </span>
+        )}
       </div>
       <div className="text-sm truncate">
         {change.description || <span className="text-gray-400 italic">(no description)</span>}

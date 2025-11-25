@@ -25,6 +25,14 @@ pub struct RespondRequest {
     pub resolve: bool,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RecordRevisionRequest {
+    #[schemars(description = "The change ID to record a revision for")]
+    pub change_id: String,
+    #[schemars(description = "Brief summary of what was addressed in this revision")]
+    pub description: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct ReviewService {
     tool_router: ToolRouter<ReviewService>,
@@ -69,6 +77,34 @@ impl ReviewService {
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Responded to thread {}{}.",
             req.thread_id, status
+        ))]))
+    }
+
+    #[tool(description = "Record a new revision after addressing feedback. Call this after making changes to create a snapshot that reviewers can compare against.")]
+    async fn record_revision(
+        &self,
+        params: Parameters<RecordRevisionRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let req = &params.0;
+        let jj = Jj::discover().map_err(|e| mcp_error(e.to_string()))?;
+        let store = ReviewStore::new(jj.repo_path());
+
+        // Get current commit_id for this change
+        let changes = jj.log(50).map_err(|e| mcp_error(e.to_string()))?;
+        let change = changes
+            .iter()
+            .find(|c| c.change_id.starts_with(&req.change_id) || req.change_id.starts_with(&c.change_id))
+            .ok_or_else(|| mcp_error(format!("Change not found: {}", req.change_id)))?;
+
+        let (_, revision_number) = store
+            .record_revision(&change.change_id, &change.commit_id, Some(req.description.clone()))
+            .map_err(|e| mcp_error(e.to_string()))?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Recorded revision {} for change {}. Summary: {}",
+            revision_number,
+            &change.change_id[..8.min(change.change_id.len())],
+            req.description
         ))]))
     }
 

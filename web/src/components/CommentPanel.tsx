@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, forwardRef } from 'react';
-import { Thread } from '../api';
+import { Thread } from '../types';
 import { useAppStore } from '../store';
 
 export function CommentPanel() {
@@ -79,14 +79,26 @@ export function CommentPanel() {
                 onClick={() => handleMerge(false)}
                 disabled={merging || loading}
                 className={`w-full px-4 py-2 rounded font-medium transition-colors ${
-                  loading || hasOpenThreads
+                  loading || hasOpenThreads || selectedChange.has_pending_changes
                     ? 'bg-gray-100 text-gray-500 hover:bg-gray-200'
                     : 'bg-green-600 text-white hover:bg-green-700'
                 } disabled:opacity-50`}
               >
                 {merging ? 'Merging...' : 'Merge'}
               </button>
-              {hasOpenThreads && (
+              {selectedChange.has_pending_changes && (
+                <p className="text-xs text-blue-600 mt-2">
+                  Pending changes not recorded as a revision.{' '}
+                  <button
+                    onClick={() => handleMerge(true)}
+                    disabled={merging}
+                    className="underline hover:text-blue-700"
+                  >
+                    Force merge
+                  </button>
+                </p>
+              )}
+              {hasOpenThreads && !selectedChange.has_pending_changes && (
                 <p className="text-xs text-amber-600 mt-2">
                   {openThreads.length} open thread{openThreads.length !== 1 ? 's' : ''} remaining.{' '}
                   <button
@@ -195,8 +207,10 @@ const ThreadCard = forwardRef<HTMLDivElement, ThreadCardProps>(function ThreadCa
       }`}
     >
       <div className="text-xs text-gray-400 mb-2 font-mono">
-        {thread.file}:{thread.line_start}-{thread.line_end}
-        <span className="ml-2 text-gray-300">[{thread.id}]</span>
+        {thread.file}:{thread.line_start}
+        {thread.created_at_revision && (
+          <span className="ml-2 text-gray-300">v{thread.created_at_revision}</span>
+        )}
       </div>
 
       <div className="space-y-2">

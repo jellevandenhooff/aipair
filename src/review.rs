@@ -9,11 +9,25 @@ const REVIEWS_DIR: &str = ".aipair/reviews";
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../web/src/types/")]
+pub struct Revision {
+    pub number: u32,
+    pub commit_id: String,
+    pub created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../web/src/types/")]
 pub struct Review {
     pub change_id: String,
     pub base: String,
     pub created_at: DateTime<Utc>,
     pub threads: Vec<Thread>,
+    #[serde(default)]
+    pub revisions: Vec<Revision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_commit_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -25,6 +39,10 @@ pub struct Thread {
     pub line_end: usize,
     pub status: ThreadStatus,
     pub comments: Vec<Comment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at_commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at_revision: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
@@ -91,8 +109,13 @@ impl ReviewStore {
         Ok(())
     }
 
-    pub fn get_or_create(&self, change_id: &str, base: &str) -> Result<Review> {
-        if let Some(review) = self.get(change_id)? {
+    pub fn get_or_create(&self, change_id: &str, base: &str, commit_id: &str) -> Result<Review> {
+        if let Some(mut review) = self.get(change_id)? {
+            // Update working_commit_id if not set (migration for old reviews)
+            if review.working_commit_id.is_none() {
+                review.working_commit_id = Some(commit_id.to_string());
+                self.save(&review)?;
+            }
             return Ok(review);
         }
 
@@ -101,10 +124,35 @@ impl ReviewStore {
             base: base.to_string(),
             created_at: Utc::now(),
             threads: Vec::new(),
+            revisions: Vec::new(),
+            working_commit_id: Some(commit_id.to_string()),
         };
 
         self.save(&review)?;
         Ok(review)
+    }
+
+    pub fn record_revision(
+        &self,
+        change_id: &str,
+        commit_id: &str,
+        description: Option<String>,
+    ) -> Result<(Review, u32)> {
+        let mut review = self
+            .get(change_id)?
+            .ok_or_else(|| anyhow::anyhow!("Review not found for change: {}", change_id))?;
+
+        let number = review.revisions.len() as u32 + 1;
+        review.revisions.push(Revision {
+            number,
+            commit_id: commit_id.to_string(),
+            created_at: Utc::now(),
+            description,
+        });
+        review.working_commit_id = Some(commit_id.to_string());
+
+        self.save(&review)?;
+        Ok((review, number))
     }
 
     pub fn list(&self) -> Result<Vec<Review>> {
@@ -145,10 +193,27 @@ impl ReviewStore {
         line_end: usize,
         author: Author,
         text: &str,
+        commit_id: &str,
     ) -> Result<(Review, String)> {
         let mut review = self
             .get(change_id)?
             .ok_or_else(|| anyhow::anyhow!("Review not found for change: {}", change_id))?;
+
+        // Auto-create revision if commit differs from last revision (or no revisions yet)
+        let last_revision_commit = review.revisions.last().map(|r| r.commit_id.as_str());
+        if last_revision_commit != Some(commit_id) {
+            let number = review.revisions.len() as u32 + 1;
+            review.revisions.push(Revision {
+                number,
+                commit_id: commit_id.to_string(),
+                created_at: Utc::now(),
+                description: None,
+            });
+        }
+        review.working_commit_id = Some(commit_id.to_string());
+
+        // Get the current revision number for tagging the thread
+        let current_revision = review.revisions.last().map(|r| r.number);
 
         // Find existing thread or create new one
         let thread_id = review
@@ -180,6 +245,8 @@ impl ReviewStore {
                         text: text.to_string(),
                         timestamp: Utc::now(),
                     }],
+                    created_at_commit: Some(commit_id.to_string()),
+                    created_at_revision: current_revision,
                 });
                 id
             }
@@ -264,20 +331,21 @@ mod tests {
     fn test_create_and_get_review() {
         let (_dir, store) = setup();
 
-        let review = store.get_or_create("abc123", "@-").unwrap();
+        let review = store.get_or_create("abc123", "@-", "commit1").unwrap();
         assert_eq!(review.change_id, "abc123");
         assert_eq!(review.base, "@-");
         assert!(review.threads.is_empty());
+        assert_eq!(review.working_commit_id, Some("commit1".to_string()));
 
         let fetched = store.get("abc123").unwrap().unwrap();
         assert_eq!(fetched.change_id, "abc123");
     }
 
     #[test]
-    fn test_add_comment_creates_thread() {
+    fn test_add_comment_creates_thread_and_revision() {
         let (_dir, store) = setup();
 
-        store.get_or_create("abc123", "@-").unwrap();
+        store.get_or_create("abc123", "@-", "commit1").unwrap();
         let (review, thread_id) = store
             .add_comment(
                 "abc123",
@@ -286,6 +354,7 @@ mod tests {
                 15,
                 Author::User,
                 "This looks wrong",
+                "commit1",
             )
             .unwrap();
 
@@ -293,13 +362,36 @@ mod tests {
         assert_eq!(review.threads[0].id, thread_id);
         assert_eq!(review.threads[0].comments.len(), 1);
         assert_eq!(review.threads[0].comments[0].text, "This looks wrong");
+        assert_eq!(review.threads[0].created_at_commit, Some("commit1".to_string()));
+        assert_eq!(review.threads[0].created_at_revision, Some(1));
+        // Auto-creates revision since none existed
+        assert_eq!(review.revisions.len(), 1);
+        assert_eq!(review.revisions[0].number, 1);
+        assert_eq!(review.revisions[0].commit_id, "commit1");
+    }
+
+    #[test]
+    fn test_add_comment_new_commit_creates_revision() {
+        let (_dir, store) = setup();
+
+        store.get_or_create("abc123", "@-", "commit1").unwrap();
+        store
+            .add_comment("abc123", "src/main.rs", 10, 15, Author::User, "First comment", "commit1")
+            .unwrap();
+        let (review, _) = store
+            .add_comment("abc123", "src/other.rs", 5, 5, Author::User, "Second comment", "commit2")
+            .unwrap();
+
+        // Should have two revisions now
+        assert_eq!(review.revisions.len(), 2);
+        assert_eq!(review.revisions[1].commit_id, "commit2");
     }
 
     #[test]
     fn test_reply_to_thread() {
         let (_dir, store) = setup();
 
-        store.get_or_create("abc123", "@-").unwrap();
+        store.get_or_create("abc123", "@-", "commit1").unwrap();
         let (_, thread_id) = store
             .add_comment(
                 "abc123",
@@ -308,6 +400,7 @@ mod tests {
                 15,
                 Author::User,
                 "This looks wrong",
+                "commit1",
             )
             .unwrap();
 
@@ -323,7 +416,7 @@ mod tests {
     fn test_resolve_thread() {
         let (_dir, store) = setup();
 
-        store.get_or_create("abc123", "@-").unwrap();
+        store.get_or_create("abc123", "@-", "commit1").unwrap();
         let (_, thread_id) = store
             .add_comment(
                 "abc123",
@@ -332,10 +425,27 @@ mod tests {
                 15,
                 Author::User,
                 "This looks wrong",
+                "commit1",
             )
             .unwrap();
 
         let review = store.resolve_thread("abc123", &thread_id).unwrap();
         assert_eq!(review.threads[0].status, ThreadStatus::Resolved);
+    }
+
+    #[test]
+    fn test_record_revision() {
+        let (_dir, store) = setup();
+
+        store.get_or_create("abc123", "@-", "commit1").unwrap();
+        let (review, number) = store
+            .record_revision("abc123", "commit2", Some("Addressed feedback".to_string()))
+            .unwrap();
+
+        assert_eq!(number, 1);
+        assert_eq!(review.revisions.len(), 1);
+        assert_eq!(review.revisions[0].commit_id, "commit2");
+        assert_eq!(review.revisions[0].description, Some("Addressed feedback".to_string()));
+        assert_eq!(review.working_commit_id, Some("commit2".to_string()));
     }
 }
