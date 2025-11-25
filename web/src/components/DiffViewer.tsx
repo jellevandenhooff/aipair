@@ -7,6 +7,9 @@ export interface DiffViewerHandle {
   scrollToThread: (threadId: string) => void;
 }
 
+// Special file name for commit message threads
+const COMMIT_MESSAGE_FILE = '__commit__';
+
 // Flattened row types for virtualization
 type Row =
   | { type: 'file-header'; path: string }
@@ -14,7 +17,9 @@ type Row =
   | { type: 'line'; file: string; line: ParsedLine }
   | { type: 'thread'; thread: Thread }
   | { type: 'comment-editor'; file: string; lineStart: number; lineEnd: number }
-  | { type: 'collapsed'; file: string; lines: ParsedLine[]; id: string };
+  | { type: 'collapsed'; file: string; lines: ParsedLine[]; id: string }
+  | { type: 'commit-header'; changeId: string; commitId: string }
+  | { type: 'commit-line'; lineNum: number; content: string };
 
 interface ParsedLine {
   type: 'context' | 'add' | 'delete';
@@ -196,6 +201,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
   // Get state from store
   const diff = useAppStore((s) => s.diff);
   const review = useAppStore((s) => s.review);
+  const selectedChange = useAppStore((s) => s.selectedChange);
   const focused = useAppStore((s) => s.focusedPanel === 'diff');
   const selectedThreadId = useAppStore((s) => s.selectedThreadId);
   const replyingToThread = useAppStore((s) => s.replyingToThread);
@@ -229,10 +235,48 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
     return parseDiffToRows(diff.raw, expandedSections);
   }, [diff?.raw, expandedSections]);
 
+  // Build commit message rows
+  const commitRows = useMemo((): Row[] => {
+    if (!selectedChange?.description) return [];
+
+    const rows: Row[] = [
+      {
+        type: 'commit-header',
+        changeId: selectedChange.change_id,
+        commitId: selectedChange.commit_id,
+      },
+    ];
+    const lines = selectedChange.description.split('\n');
+    lines.forEach((content, idx) => {
+      rows.push({ type: 'commit-line', lineNum: idx + 1, content });
+    });
+    return rows;
+  }, [selectedChange]);
+
   // Build rows with threads, selectedLines derivation, and editor insertion
   const { rows, selectedLines } = useMemo(() => {
     const threads = review?.threads || [];
-    const rowsWithThreads = insertInlineRows(baseRows, threads, null);
+
+    // Separate commit message threads from file threads
+    const commitThreads = threads.filter((t) => t.file === COMMIT_MESSAGE_FILE);
+    const fileThreads = threads.filter((t) => t.file !== COMMIT_MESSAGE_FILE);
+
+    // Insert threads and editor into commit rows
+    let commitRowsWithThreads: Row[] = [];
+    for (const row of commitRows) {
+      commitRowsWithThreads.push(row);
+      if (row.type === 'commit-line') {
+        // Insert threads that end on this line
+        const lineThreads = commitThreads.filter((t) => t.line_end === row.lineNum);
+        for (const thread of lineThreads) {
+          commitRowsWithThreads.push({ type: 'thread', thread });
+        }
+      }
+    }
+
+    // Combine commit rows + diff rows
+    const allBaseRows = [...commitRowsWithThreads, ...baseRows];
+    const rowsWithThreads = insertInlineRows(allBaseRows, fileThreads, null);
 
     // Derive selectedLines from focused row when editor is open
     let selectedLines: { file: string; start: number; end: number } | null = null;
@@ -244,16 +288,42 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
           start: focusedRow.line.newLineNum,
           end: focusedRow.line.newLineNum,
         };
+      } else if (focusedRow?.type === 'commit-line') {
+        selectedLines = {
+          file: COMMIT_MESSAGE_FILE,
+          start: focusedRow.lineNum,
+          end: focusedRow.lineNum,
+        };
       }
     }
 
     // Insert editor row if editing
-    const rows = selectedLines
-      ? insertInlineRows(baseRows, threads, selectedLines)
-      : rowsWithThreads;
+    let rows: Row[];
+    if (selectedLines) {
+      if (selectedLines.file === COMMIT_MESSAGE_FILE) {
+        // Insert editor after the commit line
+        const withEditor: Row[] = [];
+        for (const row of commitRowsWithThreads) {
+          withEditor.push(row);
+          if (row.type === 'commit-line' && row.lineNum === selectedLines.end) {
+            withEditor.push({
+              type: 'comment-editor',
+              file: COMMIT_MESSAGE_FILE,
+              lineStart: selectedLines.start,
+              lineEnd: selectedLines.end,
+            });
+          }
+        }
+        rows = [...withEditor, ...insertInlineRows(baseRows, fileThreads, null)];
+      } else {
+        rows = [...commitRowsWithThreads, ...insertInlineRows(baseRows, fileThreads, selectedLines)];
+      }
+    } else {
+      rows = rowsWithThreads;
+    }
 
     return { rows, selectedLines };
-  }, [baseRows, review?.threads, editorOpen, focusedIndex]);
+  }, [baseRows, commitRows, review?.threads, editorOpen, focusedIndex]);
 
   // Build map of threadId -> row index for scrolling
   const threadRowIndices = useMemo(() => {
@@ -280,10 +350,14 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
     [threadRowIndices]
   );
 
-  // Find indices of navigable rows (lines, threads, and collapsed sections) for keyboard nav
+  // Find indices of navigable rows (lines, threads, collapsed sections, and commit lines) for keyboard nav
   const navigableIndices = useMemo(() => {
     return rows
-      .map((row, idx) => (row.type === 'line' || row.type === 'thread' || row.type === 'collapsed' ? idx : -1))
+      .map((row, idx) =>
+        row.type === 'line' || row.type === 'thread' || row.type === 'collapsed' || row.type === 'commit-line'
+          ? idx
+          : -1
+      )
       .filter((idx) => idx !== -1);
   }, [rows]);
 
@@ -405,9 +479,12 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
             handleExpandSection(row.id);
             break;
           }
-          // Create new comment - only works on lines, not threads
+          // Create new comment - works on code lines and commit lines
           if (!review) return;
           if (row.type === 'line' && row.line.newLineNum !== undefined) {
+            e.preventDefault();
+            setEditorOpen(true);
+          } else if (row.type === 'commit-line') {
             e.preventDefault();
             setEditorOpen(true);
           }
@@ -489,6 +566,50 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
   // Render function - only called for visible rows
   const renderRow = useCallback(
     (row: Row, idx: number) => {
+      if (row.type === 'commit-header') {
+        return (
+          <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 sticky top-0 z-10 flex items-center justify-between">
+            <span className="text-amber-700 font-semibold">Commit Message</span>
+            <span className="text-xs text-amber-600/70">
+              {row.changeId.slice(0, 8)} · {row.commitId.slice(0, 8)}
+            </span>
+          </div>
+        );
+      }
+
+      if (row.type === 'commit-line') {
+        const isFocusedLine = idx === focusedIndex;
+        const isEditing = isFocusedLine && editorOpen;
+
+        return (
+          <div
+            onClick={() => {
+              if (review) {
+                setFocusedIndex(idx);
+                setEditorOpen(true);
+              }
+            }}
+            className={`flex border-l-2 ${
+              isEditing
+                ? 'bg-blue-200 ring-1 ring-blue-400'
+                : isFocusedLine && focused
+                  ? 'bg-amber-100'
+                  : isFocusedLine
+                    ? 'bg-amber-50'
+                    : 'bg-amber-50/50'
+            } border-transparent ${review && !isFocusedLine ? 'cursor-pointer hover:bg-amber-100' : ''}`}
+          >
+            <span className="w-12 text-right pr-2 select-none shrink-0 text-amber-400">
+              {row.lineNum}
+            </span>
+            <span className="w-12 text-right pr-4 select-none border-r border-amber-200 shrink-0"></span>
+            <span className="pl-4 whitespace-pre-wrap break-all flex-1 text-gray-700">
+              {row.content || '\u00A0'}
+            </span>
+          </div>
+        );
+      }
+
       if (row.type === 'file-header') {
         return (
           <div className="bg-gray-100 border-b border-gray-200 px-4 py-2 sticky top-0 z-10">
@@ -751,6 +872,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
       handleLineClick,
       handleExpandSection,
       focused,
+      editorOpen,
       commentText,
       submitting,
       handleSubmitComment,

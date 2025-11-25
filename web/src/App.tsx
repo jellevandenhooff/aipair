@@ -109,13 +109,6 @@ export default function App() {
         <main className="flex-1 flex flex-col overflow-hidden">
           {selectedChange && diff ? (
             <>
-              <div className="bg-gray-100 border-b border-gray-200 p-4">
-                <h2 className="font-mono text-sm text-gray-500">
-                  {selectedChange.change_id.slice(0, 12)}
-                </h2>
-                <p className="text-lg">{selectedChange.description || '(no description)'}</p>
-              </div>
-
               <div className="flex-1 flex overflow-hidden">
                 <div
                   className="flex-1 overflow-auto"

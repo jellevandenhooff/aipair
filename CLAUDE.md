@@ -10,6 +10,7 @@ This project uses jj (Jujutsu) for version control.
 
 - Before making changes: run `jj new` to create a fresh change (otherwise edits go into the existing working copy)
 - To "commit": run `jj describe -m "message"` then `jj new` to finalize and start fresh
+- Set a meaningful description early and update it as you work - the commit message is part of the review in aipair
 
 ### Splitting changes after accidentally editing an existing commit
 If you edited files without first running `jj new`, the changes went into the existing commit. To split them out:

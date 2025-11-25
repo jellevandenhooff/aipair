@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
 use ts_rs::TS;
@@ -13,6 +13,24 @@ pub struct Change {
     pub author: String,
     pub timestamp: String,
     pub empty: bool,
+}
+
+/// Internal struct for deserializing jj's JSON output
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct JjChange {
+    change_id: String,
+    commit_id: String,
+    description: String,
+    author: JjSignature,
+    committer: JjSignature,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct JjSignature {
+    email: String,
+    timestamp: String,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -74,6 +92,7 @@ impl Jj {
 
     /// List recent changes
     pub fn log(&self, limit: usize) -> Result<Vec<Change>> {
+        // Use json(self) for proper escaping of description, append empty flag with tab separator
         let output = Command::new("jj")
             .current_dir(&self.repo_path)
             .args([
@@ -82,7 +101,7 @@ impl Jj {
                 "-r",
                 &format!("ancestors(@, {limit})"),
                 "-T",
-                r#"change_id ++ "\t" ++ commit_id ++ "\t" ++ description.first_line() ++ "\t" ++ author.email() ++ "\t" ++ committer.timestamp() ++ "\t" ++ empty ++ "\n""#,
+                r#"json(self) ++ "\t" ++ empty ++ "\n""#,
             ])
             .output()
             .context("Failed to run jj log")?;
@@ -98,21 +117,30 @@ impl Jj {
             if line.trim().is_empty() {
                 continue;
             }
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 6 {
-                // Skip the root commit (all z's) - it has no parent and can't be diffed
-                if parts[0].chars().all(|c| c == 'z') {
-                    continue;
-                }
-                changes.push(Change {
-                    change_id: parts[0].to_string(),
-                    commit_id: parts[1].to_string(),
-                    description: parts[2].to_string(),
-                    author: parts[3].to_string(),
-                    timestamp: parts[4].to_string(),
-                    empty: parts[5] == "true",
-                });
+
+            // Parse "json\tempty" format
+            // TODO: jj's json(self) doesn't include `empty`, so we append it separately.
+            // Would be cleaner if jj supported including it in the JSON output.
+            let Some((json_str, empty_str)) = line.rsplit_once('\t') else {
+                continue;
+            };
+
+            let jj_change: JjChange = serde_json::from_str(json_str)
+                .with_context(|| format!("Failed to parse jj log output: {json_str}"))?;
+
+            // Skip the root commit (all z's) - it has no parent and can't be diffed
+            if jj_change.change_id.chars().all(|c| c == 'z') {
+                continue;
             }
+
+            changes.push(Change {
+                change_id: jj_change.change_id,
+                commit_id: jj_change.commit_id,
+                description: jj_change.description.trim_end().to_string(),
+                author: jj_change.author.email,
+                timestamp: jj_change.committer.timestamp,
+                empty: empty_str == "true",
+            });
         }
 
         Ok(changes)
