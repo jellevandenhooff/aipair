@@ -6,10 +6,10 @@
 - If removing feels wrong (e.g., might want to track what was done), consider if it belongs in commit messages or documentation instead
 
 ## Version Control
-- This project uses jj (Jujutsu) for version control
-- Use `jj describe` to set commit messages
-- Use `jj new` to create new changes
-- IMPORTANT: Always run `jj new` BEFORE making changes to create a fresh change, otherwise edits go into the existing working copy change
+This project uses jj (Jujutsu) for version control.
+
+- Before making changes: run `jj new` to create a fresh change (otherwise edits go into the existing working copy)
+- To "commit": run `jj describe -m "message"` then `jj new` to finalize and start fresh
 
 ### Splitting changes after accidentally editing an existing commit
 If you edited files without first running `jj new`, the changes went into the existing commit. To split them out:
