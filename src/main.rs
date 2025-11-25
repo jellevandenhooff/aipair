@@ -1,6 +1,7 @@
 mod api;
 mod cli;
 mod jj;
+mod mcp;
 mod review;
 
 use anyhow::Result;
@@ -26,6 +27,8 @@ enum Commands {
         #[command(subcommand)]
         command: cli::ReviewCommands,
     },
+    /// Run as MCP server (for Claude Code integration)
+    Mcp,
 }
 
 #[tokio::main]
@@ -45,6 +48,9 @@ async fn main() -> Result<()> {
         }
         Commands::Review { command } => {
             cli::handle_review_command(command).await?;
+        }
+        Commands::Mcp => {
+            mcp::run_mcp_server().await?;
         }
     }
 

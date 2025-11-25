@@ -14,8 +14,8 @@ tower-http = { version = "0.6", features = ["cors", "fs"] }
 clap = { version = "4", features = ["derive"] }
 
 # MCP server
-rmcp = { version = "0.9", features = ["server"] }
-schemars = "0.8"
+rmcp = { version = "0.9", features = ["server", "transport-io"] }
+schemars = "1.0"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
