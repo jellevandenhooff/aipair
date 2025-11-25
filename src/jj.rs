@@ -146,24 +146,6 @@ impl Jj {
         Ok(changes)
     }
 
-    /// Get the commit_id for a specific change
-    pub fn get_commit_id(&self, change_id: &str) -> Result<String> {
-        let output = Command::new("jj")
-            .current_dir(&self.repo_path)
-            .args(["log", "--no-graph", "-r", change_id, "-T", "commit_id"])
-            .output()
-            .context("Failed to run jj log")?;
-
-        if !output.status.success() {
-            anyhow::bail!(
-                "jj log failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
-        Ok(String::from_utf8(output.stdout)?.trim().to_string())
-    }
-
     /// Get diff for a change (compared to its parent by default)
     pub fn diff(&self, change_id: &str, base: Option<&str>) -> Result<Diff> {
         let default_base = format!("{change_id}-");
