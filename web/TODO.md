@@ -18,6 +18,7 @@
 - Explaining changes; no surprises
 
 # Known limitations / tech debt
+- Figure out what changes to show when using `jj edit` on an earlier change in the stack
 - Support commenting on deleted lines (old file)
 - Handle race conditions in async store actions
 - Duplicate components for threads

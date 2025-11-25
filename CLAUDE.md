@@ -11,6 +11,7 @@ This project uses jj (Jujutsu) for version control.
 - Before making changes: run `jj new` to create a fresh change (otherwise edits go into the existing working copy)
 - To "commit": run `jj describe -m "message"` then `jj new` to finalize and start fresh
 - Set a meaningful description early and update it as you work - the commit message is part of the review in aipair
+- ALWAYS pass `-m "message"` to jj commands that accept it (describe, new, squash) to avoid opening an editor
 
 ### Splitting changes after accidentally editing an existing commit
 If you edited files without first running `jj new`, the changes went into the existing commit. To split them out:
@@ -20,3 +21,12 @@ If you edited files without first running `jj new`, the changes went into the ex
 3. `jj restore --from <old-commit-id> --into @- --restore-descendants`
 
 The `--restore-descendants` flag preserves the *content* of descendant commits (rather than their *diff*), so your new changes end up in the child commit.
+
+### Addressing review feedback
+When fixing review feedback, use `jj edit` to directly edit the change being reviewed:
+
+1. `jj edit <change-id>` - check out the change to edit
+2. Make the changes (they go directly into that change)
+3. `jj edit <original-change>` - return to where you were working
+
+This keeps the fix in the original change rather than creating a separate "fix feedback" commit.
