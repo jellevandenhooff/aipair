@@ -149,11 +149,20 @@ struct DiffResponse {
     diff: crate::jj::Diff,
 }
 
+#[derive(Deserialize)]
+struct DiffQuery {
+    /// Optional commit ID to view diff at (defaults to current working copy)
+    commit: Option<String>,
+}
+
 async fn get_diff(
     State(state): State<Arc<AppState>>,
     Path(change_id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<DiffQuery>,
 ) -> impl IntoResponse {
-    match state.jj.diff(&change_id, None) {
+    // If a specific commit is requested, use it as the "to" revision
+    let to_rev = query.commit.as_deref().unwrap_or(&change_id);
+    match state.jj.diff(to_rev, None) {
         Ok(diff) => Json(DiffResponse { diff }).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }

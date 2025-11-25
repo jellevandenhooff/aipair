@@ -1,6 +1,6 @@
 # Review loop
 - Live updates
-- MCP server doesn't reload when binary is rebuilt (need to restart Claude Code)
+- MCP server doesn't reload when binary is rebuilt (need to restart Claude Code) - ANNOYING: causes subtle bugs where old code runs silently
 
 # Revision tracking enhancements
 - Revision comparison UI (diff v1→v2 to see what changed between rounds)
@@ -22,7 +22,7 @@
 # Known limitations / tech debt
 - Figure out what changes to show when using `jj edit` on an earlier change in the stack
 - Support commenting on deleted lines (old file)
-- Handle race conditions in async store actions
+- Handle race conditions in async store actions (e.g., revision list shows stale data briefly when switching changes - fetch data first, then compute/display)
 - Duplicate components for threads
 - Decentralize state: store.ts is accumulating too much (e.g., newCommentText, confirm logic). Consider isDirty ref pattern or component-level state with callbacks.
 - Consider removing line_end from Thread data model (we only use line_start now)

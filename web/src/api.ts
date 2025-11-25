@@ -13,8 +13,11 @@ export async function fetchChanges(): Promise<Change[]> {
   return data.changes;
 }
 
-export async function fetchDiff(changeId: string): Promise<Diff> {
-  const res = await fetch(`${API_BASE}/changes/${changeId}/diff`);
+export async function fetchDiff(changeId: string, commitId?: string): Promise<Diff> {
+  const url = commitId
+    ? `${API_BASE}/changes/${changeId}/diff?commit=${encodeURIComponent(commitId)}`
+    : `${API_BASE}/changes/${changeId}/diff`;
+  const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to fetch diff: ${res.statusText}`);
   const data = await res.json();
   return data.diff;

@@ -12,6 +12,7 @@ import {
   reopenThread,
   mergeChange as apiMergeChange,
 } from './api';
+import type { Revision } from './types';
 
 type FocusedPanel = 'changes' | 'diff' | 'threads';
 
@@ -29,6 +30,7 @@ interface AppState {
   // UI state
   focusedPanel: FocusedPanel;
   selectedThreadId: string | null;
+  selectedRevision: Revision | null; // null = current working copy
 
   // New comment state (for diff lines)
   newCommentText: string;
@@ -61,6 +63,9 @@ interface AppState {
   navigateChanges: (direction: 'up' | 'down') => void;
   navigateThreads: (direction: 'up' | 'down') => void;
 
+  // Revision selection
+  selectRevision: (revision: Revision | null) => Promise<void>;
+
   // Merge actions
   mergeChange: (changeId: string, force?: boolean) => Promise<{ success: boolean; message: string }>;
 }
@@ -75,6 +80,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   error: null,
   focusedPanel: 'changes',
   selectedThreadId: null,
+  selectedRevision: null,
   newCommentText: '',
   replyingToThread: false,
   replyText: '',
@@ -105,11 +111,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     if (!change) {
-      set({ selectedChange: null, diff: null, review: null, selectedThreadId: null, newCommentText: '' });
+      set({ selectedChange: null, diff: null, review: null, selectedThreadId: null, selectedRevision: null, newCommentText: '' });
       return;
     }
 
-    set({ selectedChange: change, loading: true, newCommentText: '' });
+    set({ selectedChange: change, loading: true, selectedRevision: null, newCommentText: '' });
     try {
       const [diff, review] = await Promise.all([
         fetchDiff(change.change_id),
@@ -138,10 +144,10 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       // If a change is selected, refresh its diff and review
       if (selectedChange) {
-        // Check if the selected change still exists
-        const stillExists = changes.some((c) => c.change_id === selectedChange.change_id);
-        if (!stillExists) {
-          set({ selectedChange: null, diff: null, review: null, selectedThreadId: null });
+        // Find the updated version of the selected change
+        const updatedChange = changes.find((c) => c.change_id === selectedChange.change_id);
+        if (!updatedChange) {
+          set({ selectedChange: null, diff: null, review: null, selectedThreadId: null, selectedRevision: null });
           return;
         }
 
@@ -149,7 +155,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           fetchDiff(selectedChange.change_id),
           fetchReview(selectedChange.change_id),
         ]);
-        set({ diff, review });
+        // Update selectedChange to the new object with updated merged/pending status
+        set({ selectedChange: updatedChange, diff, review });
       }
     } catch (e) {
       // Silently ignore refresh errors to avoid spamming the user
@@ -275,6 +282,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     set({ selectedThreadId: threadIds[nextIdx] });
+  },
+
+  // Revision selection
+  selectRevision: async (revision) => {
+    const { selectedChange } = get();
+    if (!selectedChange) return;
+
+    set({ selectedRevision: revision, loading: true });
+    try {
+      // Fetch diff at specific commit, or current if null
+      const diff = await fetchDiff(selectedChange.change_id, revision?.commit_id);
+      set({ diff, loading: false });
+    } catch (e) {
+      console.error('Failed to load revision diff:', e);
+      set({ loading: false });
+    }
   },
 
   // Merge actions

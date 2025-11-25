@@ -8,9 +8,11 @@ export function CommentPanel() {
   const loading = useAppStore((s) => s.loading);
   const focused = useAppStore((s) => s.focusedPanel === 'threads');
   const selectedThreadId = useAppStore((s) => s.selectedThreadId);
+  const selectedRevision = useAppStore((s) => s.selectedRevision);
   const replyingToThread = useAppStore((s) => s.replyingToThread);
   const startReply = useAppStore((s) => s.startReply);
   const mergeChange = useAppStore((s) => s.mergeChange);
+  const selectRevision = useAppStore((s) => s.selectRevision);
 
   const [merging, setMerging] = useState(false);
 
@@ -62,7 +64,15 @@ export function CommentPanel() {
   };
 
   const openThreads = review?.threads.filter((t) => t.status === 'open') ?? [];
-  const resolvedThreads = review?.threads.filter((t) => t.status === 'resolved') ?? [];
+  // Sort resolved threads by revision (newest first), then by id for stable ordering
+  const resolvedThreads = (review?.threads.filter((t) => t.status === 'resolved') ?? [])
+    .slice()
+    .sort((a, b) => {
+      const revA = a.created_at_revision ?? 0;
+      const revB = b.created_at_revision ?? 0;
+      if (revB !== revA) return revB - revA;
+      return b.id.localeCompare(a.id); // stable secondary sort
+    });
   const totalThreads = (review?.threads.length ?? 0);
   const hasOpenThreads = openThreads.length > 0;
 
@@ -112,6 +122,48 @@ export function CommentPanel() {
               )}
             </>
           )}
+        </div>
+      )}
+
+      {/* Revisions section - always show when review exists */}
+      {review && (selectedChange?.has_pending_changes || review.revisions.length > 0) && (
+        <div className="p-4">
+          <h3 className="font-semibold text-sm text-gray-700 mb-2">
+            Revisions ({review.revisions.length})
+          </h3>
+          <div className="space-y-1">
+            {/* Pending row - only show if there are pending changes */}
+            {selectedChange?.has_pending_changes && (
+              <button
+                onClick={() => selectRevision(null)}
+                className={`w-full text-left px-2 py-1 text-xs rounded transition-colors ${
+                  selectedRevision === null
+                    ? 'bg-blue-100 text-blue-800'
+                    : 'hover:bg-gray-100 text-blue-600'
+                }`}
+              >
+                <span className="font-mono">Pending</span>
+              </button>
+            )}
+            {/* Revisions in reverse order (newest first) */}
+            {[...review.revisions].reverse().map((rev) => (
+              <button
+                key={rev.number}
+                onClick={() => selectRevision(rev)}
+                className={`w-full text-left px-2 py-1 text-xs rounded transition-colors truncate block ${
+                  selectedRevision?.number === rev.number ||
+                  (selectedRevision === null && !selectedChange?.has_pending_changes && rev.number === review.revisions.length)
+                    ? 'bg-blue-100 text-blue-800'
+                    : 'hover:bg-gray-100 text-gray-600'
+                }`}
+              >
+                <span className="font-mono">v{rev.number}</span>
+                {rev.description && (
+                  <span className="ml-2">{rev.description}</span>
+                )}
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
@@ -208,8 +260,8 @@ const ThreadCard = forwardRef<HTMLDivElement, ThreadCardProps>(function ThreadCa
     >
       <div className="text-xs text-gray-400 mb-2 font-mono">
         {thread.file}:{thread.line_start}
-        {thread.created_at_revision && (
-          <span className="ml-2 text-gray-300">v{thread.created_at_revision}</span>
+        {thread.created_at_revision != null && (
+          <span className="ml-2 text-gray-500">v{thread.created_at_revision}</span>
         )}
       </div>
 

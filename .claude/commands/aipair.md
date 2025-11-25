@@ -7,6 +7,10 @@ For each thread:
 2. IMPORTANT: Double-check that ALL work is actually complete before responding
 3. Then use `mcp__aipair__respond_to_thread` to reply
 
+After addressing feedback:
+- If you made code changes and responded to multiple threads, use `mcp__aipair__record_revision` to create a snapshot
+- This helps track what changed between review rounds
+
 Guidelines:
 - VERIFY your work is done before responding - re-read the feedback and confirm each point was addressed
 - Only set resolve=true if you are CERTAIN the feedback was addressed as the user intended
