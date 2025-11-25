@@ -13,7 +13,8 @@ type Row =
   | { type: 'hunk-header'; header: string }
   | { type: 'line'; file: string; line: ParsedLine }
   | { type: 'thread'; thread: Thread }
-  | { type: 'comment-editor'; file: string; lineStart: number; lineEnd: number };
+  | { type: 'comment-editor'; file: string; lineStart: number; lineEnd: number }
+  | { type: 'collapsed'; file: string; lines: ParsedLine[]; id: string };
 
 interface ParsedLine {
   type: 'context' | 'add' | 'delete';
@@ -22,7 +23,9 @@ interface ParsedLine {
   newLineNum?: number;
 }
 
-function parseDiffToRows(raw: string): Row[] {
+const CONTEXT_LINES_TO_SHOW = 3;
+
+function parseDiffToRows(raw: string, expandedSections: Set<string>): Row[] {
   const rows: Row[] = [];
   const lines = raw.split('\n');
 
@@ -31,40 +34,105 @@ function parseDiffToRows(raw: string): Row[] {
   let newLine = 0;
   let inHunk = false;
 
+  // First pass: parse all lines
+  const allRows: Row[] = [];
+
   for (const line of lines) {
     if (line.startsWith('diff --git')) {
       inHunk = false;
     } else if (line.startsWith('+++ b/')) {
       currentFile = line.slice(6);
-      rows.push({ type: 'file-header', path: currentFile });
+      allRows.push({ type: 'file-header', path: currentFile });
     } else if (line.startsWith('@@')) {
       const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
       if (match) {
         oldLine = parseInt(match[1], 10);
         newLine = parseInt(match[2], 10);
       }
-      rows.push({ type: 'hunk-header', header: line });
+      allRows.push({ type: 'hunk-header', header: line });
       inHunk = true;
     } else if (inHunk) {
       if (line.startsWith('+')) {
-        rows.push({
+        allRows.push({
           type: 'line',
           file: currentFile,
           line: { type: 'add', content: line.slice(1), newLineNum: newLine++ },
         });
       } else if (line.startsWith('-')) {
-        rows.push({
+        allRows.push({
           type: 'line',
           file: currentFile,
           line: { type: 'delete', content: line.slice(1), oldLineNum: oldLine++ },
         });
       } else if (line.startsWith(' ') || line === '') {
-        rows.push({
+        allRows.push({
           type: 'line',
           file: currentFile,
           line: { type: 'context', content: line.slice(1), oldLineNum: oldLine++, newLineNum: newLine++ },
         });
       }
+    }
+  }
+
+  // Second pass: collapse context lines
+  let i = 0;
+  while (i < allRows.length) {
+    const row = allRows[i];
+
+    if (row.type !== 'line' || row.line.type !== 'context') {
+      rows.push(row);
+      i++;
+      continue;
+    }
+
+    // Found a context line - collect the run of context lines
+    const contextLines: ParsedLine[] = [];
+    let contextFile = row.file;
+
+    while (i < allRows.length) {
+      const r = allRows[i];
+      if (r.type === 'line' && r.line.type === 'context' && r.file === contextFile) {
+        contextLines.push(r.line);
+        i++;
+      } else {
+        break;
+      }
+    }
+
+    // If context run is short enough, just show all lines
+    if (contextLines.length <= CONTEXT_LINES_TO_SHOW * 2 + 1) {
+      for (const line of contextLines) {
+        rows.push({ type: 'line', file: contextFile, line });
+      }
+      continue;
+    }
+
+    // Check if this section is expanded
+    const collapsedId = `${contextFile}:${contextLines[0].newLineNum}`;
+    if (expandedSections.has(collapsedId)) {
+      for (const line of contextLines) {
+        rows.push({ type: 'line', file: contextFile, line });
+      }
+      continue;
+    }
+
+    // Show first few context lines
+    for (let j = 0; j < CONTEXT_LINES_TO_SHOW; j++) {
+      rows.push({ type: 'line', file: contextFile, line: contextLines[j] });
+    }
+
+    // Add collapsed section
+    const hiddenLines = contextLines.slice(CONTEXT_LINES_TO_SHOW, -CONTEXT_LINES_TO_SHOW);
+    rows.push({
+      type: 'collapsed',
+      file: contextFile,
+      lines: hiddenLines,
+      id: collapsedId,
+    });
+
+    // Show last few context lines
+    for (let j = contextLines.length - CONTEXT_LINES_TO_SHOW; j < contextLines.length; j++) {
+      rows.push({ type: 'line', file: contextFile, line: contextLines[j] });
     }
   }
 
@@ -129,6 +197,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
   const diff = useAppStore((s) => s.diff);
   const review = useAppStore((s) => s.review);
   const focused = useAppStore((s) => s.focusedPanel === 'diff');
+  const selectedThreadId = useAppStore((s) => s.selectedThreadId);
   const replyingToThread = useAppStore((s) => s.replyingToThread);
   const replyText = useAppStore((s) => s.replyText);
   const submittingReply = useAppStore((s) => s.submittingReply);
@@ -147,6 +216,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
   const [focusedIndex, setFocusedIndex] = useState(0);
   const [editorOpen, setEditorOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
 
   const listRef = useRef<VListHandle>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -156,8 +226,8 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
   // Parse diff into base rows
   const baseRows = useMemo(() => {
     if (!diff) return [];
-    return parseDiffToRows(diff.raw);
-  }, [diff?.raw]);
+    return parseDiffToRows(diff.raw, expandedSections);
+  }, [diff?.raw, expandedSections]);
 
   // Build rows with threads, selectedLines derivation, and editor insertion
   const { rows, selectedLines } = useMemo(() => {
@@ -210,20 +280,27 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
     [threadRowIndices]
   );
 
-  // Find indices of navigable rows (lines and threads) for keyboard nav
+  // Find indices of navigable rows (lines, threads, and collapsed sections) for keyboard nav
   const navigableIndices = useMemo(() => {
     return rows
-      .map((row, idx) => (row.type === 'line' || row.type === 'thread' ? idx : -1))
+      .map((row, idx) => (row.type === 'line' || row.type === 'thread' || row.type === 'collapsed' ? idx : -1))
       .filter((idx) => idx !== -1);
   }, [rows]);
 
-  // Close editor when changeset changes (unless user has entered text)
+  // Track change_id to detect actual changeset switches (not just polling refreshes)
+  const prevChangeIdRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!commentText.trim()) {
-      setEditorOpen(false);
-      setFocusedIndex(0);
+    const currentChangeId = diff?.change_id ?? null;
+    if (prevChangeIdRef.current !== null && prevChangeIdRef.current !== currentChangeId) {
+      // Changeset actually switched - reset state
+      if (!commentText.trim()) {
+        setEditorOpen(false);
+        setFocusedIndex(0);
+      }
+      setExpandedSections(new Set());
     }
-  }, [diff]);
+    prevChangeIdRef.current = currentChangeId;
+  }, [diff?.change_id]);
 
   // Focus textarea when editor appears
   useEffect(() => {
@@ -254,6 +331,14 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
     },
     [review]
   );
+
+  const handleExpandSection = useCallback((id: string) => {
+    setExpandedSections((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+  }, []);
 
   const handleSubmitComment = useCallback(async () => {
     if (!selectedLines || !commentText.trim() || !review) return;
@@ -313,9 +398,15 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
         }
         case 'Enter':
         case 'c': {
+          const row = rows[focusedIndex];
+          // Expand collapsed section
+          if (row.type === 'collapsed') {
+            e.preventDefault();
+            handleExpandSection(row.id);
+            break;
+          }
           // Create new comment - only works on lines, not threads
           if (!review) return;
-          const row = rows[focusedIndex];
           if (row.type === 'line' && row.line.newLineNum !== undefined) {
             e.preventDefault();
             setEditorOpen(true);
@@ -393,7 +484,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [focusedIndex, navigableIndices, rows, review, focused, startReply, toggleThreadStatus, cancelReply]);
+  }, [focusedIndex, navigableIndices, rows, review, focused, startReply, toggleThreadStatus, cancelReply, handleExpandSection]);
 
   // Render function - only called for visible rows
   const renderRow = useCallback(
@@ -465,7 +556,9 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
                   >
                     Reopen
                   </button>
-                ) : replyingToThread ? (
+                ) : replyingToThread && selectedThreadId === thread.id ? (
+                  // TODO: replyingToThread (bool) + selectedThreadId (string) is redundant.
+                  // Could simplify to just replyingToThreadId: string | null in the store.
                   <>
                     <textarea
                       ref={replyTextareaRef}
@@ -579,6 +672,27 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
         );
       }
 
+      if (row.type === 'collapsed') {
+        const isFocusedRow = idx === focusedIndex;
+        return (
+          <div
+            onClick={() => handleExpandSection(row.id)}
+            className={`flex border-y text-xs py-1 cursor-pointer ${
+              isFocusedRow && focused
+                ? 'bg-blue-100 border-blue-300 text-blue-700'
+                : isFocusedRow
+                  ? 'bg-blue-50 border-gray-200 text-gray-600'
+                  : 'bg-gray-50 border-gray-200 text-gray-500 hover:bg-gray-100 hover:text-gray-700'
+            }`}
+          >
+            <span className="w-24 text-center shrink-0">⋯</span>
+            <span className="pl-4">
+              {row.lines.length} lines hidden — {isFocusedRow && focused ? 'Enter to expand' : 'click to expand'}
+            </span>
+          </div>
+        );
+      }
+
       // line row
       const { line } = row;
       const isFocusedLine = idx === focusedIndex;
@@ -611,7 +725,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
           <span className="w-12 text-right pr-4 select-none border-r border-gray-200 shrink-0 text-gray-400">
             {line.newLineNum ?? ''}
           </span>
-          <span className="pl-4 whitespace-pre flex-1">
+          <span className="pl-4 whitespace-pre-wrap break-all flex-1">
             <span
               className={`${
                 line.type === 'add'
@@ -635,10 +749,12 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
       selectedLines,
       review,
       handleLineClick,
+      handleExpandSection,
       focused,
       commentText,
       submitting,
       handleSubmitComment,
+      selectedThreadId,
       replyingToThread,
       startReply,
       submitReply,

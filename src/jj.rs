@@ -152,9 +152,20 @@ impl Jj {
     }
 
     fn diff_raw(&self, change_id: &str, base: &str) -> Result<String> {
+        // TODO: --context=10000 is a hack to get full file context for the UI's
+        // collapsible sections. jj doesn't have a --context=all option. Consider
+        // fetching full files separately and reconstructing the diff in the UI.
         let output = Command::new("jj")
             .current_dir(&self.repo_path)
-            .args(["diff", "--from", base, "--to", change_id, "--git"])
+            .args([
+                "diff",
+                "--from",
+                base,
+                "--to",
+                change_id,
+                "--git",
+                "--context=10000",
+            ])
             .output()
             .context("Failed to run jj diff")?;
 
