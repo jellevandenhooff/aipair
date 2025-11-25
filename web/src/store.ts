@@ -29,7 +29,10 @@ interface AppState {
   focusedPanel: FocusedPanel;
   selectedThreadId: string | null;
 
-  // Reply state
+  // New comment state (for diff lines)
+  newCommentText: string;
+
+  // Reply state (for existing threads)
   replyingToThread: boolean;
   replyText: string;
   submittingReply: boolean;
@@ -42,6 +45,8 @@ interface AppState {
   setSelectedThreadId: (id: string | null) => void;
   setReview: (review: Review) => void;
   clearError: () => void;
+  setNewCommentText: (text: string) => void;
+  clearNewComment: () => void;
 
   // Reply actions
   startReply: (threadId: string) => void;
@@ -65,6 +70,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   error: null,
   focusedPanel: 'changes',
   selectedThreadId: null,
+  newCommentText: '',
   replyingToThread: false,
   replyText: '',
   submittingReply: false,
@@ -85,12 +91,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   selectChange: async (change) => {
+    const { newCommentText, selectedChange } = get();
+
+    // Check for unsaved comment text when switching changes
+    if (change && selectedChange && change.change_id !== selectedChange.change_id && newCommentText.trim()) {
+      const confirmed = window.confirm('You have an unsaved comment. Discard it?');
+      if (!confirmed) return;
+    }
+
     if (!change) {
-      set({ selectedChange: null, diff: null, review: null, selectedThreadId: null });
+      set({ selectedChange: null, diff: null, review: null, selectedThreadId: null, newCommentText: '' });
       return;
     }
 
-    set({ selectedChange: change, loading: true });
+    set({ selectedChange: change, loading: true, newCommentText: '' });
     try {
       const [diff, review] = await Promise.all([
         fetchDiff(change.change_id),
@@ -141,6 +155,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   setReview: (review) => set({ review }),
 
   clearError: () => set({ error: null }),
+
+  setNewCommentText: (text) => set({ newCommentText: text }),
+
+  clearNewComment: () => set({ newCommentText: '' }),
 
   // Reply actions
   startReply: (threadId) => {

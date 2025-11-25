@@ -14,6 +14,7 @@ export default function App() {
   const focusedPanel = useAppStore((s) => s.focusedPanel);
 
   const fetchChanges = useAppStore((s) => s.fetchChanges);
+  const setFocusedPanel = useAppStore((s) => s.setFocusedPanel);
   const cyclePanel = useAppStore((s) => s.cyclePanel);
   const navigateChanges = useAppStore((s) => s.navigateChanges);
   const navigateThreads = useAppStore((s) => s.navigateThreads);
@@ -88,7 +89,10 @@ export default function App() {
     <div className="h-screen flex flex-col overflow-hidden">
       <div className="flex flex-1 overflow-hidden">
         {/* Change list sidebar */}
-        <aside className="w-80 border-r border-gray-200 overflow-y-auto bg-gray-50">
+        <aside
+          className="w-80 border-r border-gray-200 overflow-y-auto bg-gray-50"
+          onClick={() => setFocusedPanel('changes')}
+        >
           <ChangeList />
         </aside>
 
@@ -104,12 +108,18 @@ export default function App() {
               </div>
 
               <div className="flex-1 flex overflow-hidden">
-                <div className="flex-1 overflow-auto">
+                <div
+                  className="flex-1 overflow-auto"
+                  onClick={() => setFocusedPanel('diff')}
+                >
                   <DiffViewer ref={diffViewerRef} />
                 </div>
 
                 {review && (
-                  <aside className="w-96 border-l border-gray-200 overflow-y-auto bg-gray-50">
+                  <aside
+                    className="w-96 border-l border-gray-200 overflow-y-auto bg-gray-50"
+                    onClick={() => setFocusedPanel('threads')}
+                  >
                     <CommentPanel />
                   </aside>
                 )}

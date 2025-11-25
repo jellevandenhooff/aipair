@@ -23,12 +23,12 @@ export function ChangeList() {
           <button
             key={change.change_id}
             onClick={() => selectChange(change)}
-            className={`w-full text-left p-4 hover:bg-gray-100 transition-colors ${
+            className={`w-full text-left p-4 transition-colors ${
               isSelected && focused
-                ? 'bg-blue-100 border-l-2 border-blue-500'
+                ? 'bg-blue-100 hover:bg-blue-100 border-l-2 border-blue-500'
                 : isSelected
-                  ? 'bg-blue-50 border-l-2 border-blue-300'
-                  : ''
+                  ? 'bg-blue-50 hover:bg-blue-100 border-l-2 border-blue-300'
+                  : 'hover:bg-gray-100'
             }`}
           >
             <div className="font-mono text-xs text-gray-400">

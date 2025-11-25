@@ -21,9 +21,9 @@
 - Support commenting on deleted lines (old file)
 - Handle race conditions in async store actions
 - Duplicate components for threads
+- Decentralize state: store.ts is accumulating too much (e.g., newCommentText, confirm logic). Consider isDirty ref pattern or component-level state with callbacks.
 
 # Friction
-- Click should move focus (like keyboard focus)
 - Put location in URL (for refreshing)
 - See if zustand can survive hot reloads better?
 - Wrap long lines

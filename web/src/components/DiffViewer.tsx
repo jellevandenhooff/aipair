@@ -99,9 +99,13 @@ function insertInlineRows(
       const key = `${row.file}:${lineNum}`;
 
       // Insert threads that end on this line
-      const lineThreads = threadsByEndLine.get(key) || [];
-      for (const thread of lineThreads) {
-        result.push({ type: 'thread', thread });
+      // Only insert after lines with newLineNum to avoid duplicates on changed lines
+      // TODO: support threads on deleted lines (see TODO.md)
+      if (row.line.newLineNum !== undefined) {
+        const lineThreads = threadsByEndLine.get(key) || [];
+        for (const thread of lineThreads) {
+          result.push({ type: 'thread', thread });
+        }
       }
 
       // Insert comment editor after the selected line range ends
@@ -128,8 +132,11 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
   const replyingToThread = useAppStore((s) => s.replyingToThread);
   const replyText = useAppStore((s) => s.replyText);
   const submittingReply = useAppStore((s) => s.submittingReply);
+  const commentText = useAppStore((s) => s.newCommentText);
 
   const setReview = useAppStore((s) => s.setReview);
+  const setCommentText = useAppStore((s) => s.setNewCommentText);
+  const clearNewComment = useAppStore((s) => s.clearNewComment);
   const startReply = useAppStore((s) => s.startReply);
   const cancelReply = useAppStore((s) => s.cancelReply);
   const setReplyText = useAppStore((s) => s.setReplyText);
@@ -137,23 +144,46 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
   const toggleThreadStatus = useAppStore((s) => s.toggleThreadStatus);
 
   // Local state
-  const [selectedLines, setSelectedLines] = useState<{ file: string; start: number; end: number } | null>(null);
-  const [commentText, setCommentText] = useState('');
-  const [submitting, setSubmitting] = useState(false);
   const [focusedIndex, setFocusedIndex] = useState(0);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   const listRef = useRef<VListHandle>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const replyTextareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const baseRows = useMemo(() => (diff ? parseDiffToRows(diff.raw) : []), [diff?.raw]);
+  // Parse diff into base rows
+  const baseRows = useMemo(() => {
+    if (!diff) return [];
+    return parseDiffToRows(diff.raw);
+  }, [diff?.raw]);
 
-  // Insert thread rows and editor row
-  const rows = useMemo(() => {
+  // Build rows with threads, selectedLines derivation, and editor insertion
+  const { rows, selectedLines } = useMemo(() => {
     const threads = review?.threads || [];
-    return insertInlineRows(baseRows, threads, selectedLines);
-  }, [baseRows, review?.threads, selectedLines]);
+    const rowsWithThreads = insertInlineRows(baseRows, threads, null);
+
+    // Derive selectedLines from focused row when editor is open
+    let selectedLines: { file: string; start: number; end: number } | null = null;
+    if (editorOpen) {
+      const focusedRow = rowsWithThreads[focusedIndex];
+      if (focusedRow?.type === 'line' && focusedRow.line.newLineNum !== undefined) {
+        selectedLines = {
+          file: focusedRow.file,
+          start: focusedRow.line.newLineNum,
+          end: focusedRow.line.newLineNum,
+        };
+      }
+    }
+
+    // Insert editor row if editing
+    const rows = selectedLines
+      ? insertInlineRows(baseRows, threads, selectedLines)
+      : rowsWithThreads;
+
+    return { rows, selectedLines };
+  }, [baseRows, review?.threads, editorOpen, focusedIndex]);
 
   // Build map of threadId -> row index for scrolling
   const threadRowIndices = useMemo(() => {
@@ -187,17 +217,13 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
       .filter((idx) => idx !== -1);
   }, [rows]);
 
-  // Build a set of lines with threads for O(1) lookup
-  const linesWithThreads = useMemo(() => {
-    if (!review) return new Set<string>();
-    const set = new Set<string>();
-    for (const t of review.threads) {
-      for (let i = t.line_start; i <= t.line_end; i++) {
-        set.add(`${t.file}:${i}`);
-      }
+  // Close editor when changeset changes (unless user has entered text)
+  useEffect(() => {
+    if (!commentText.trim()) {
+      setEditorOpen(false);
+      setFocusedIndex(0);
     }
-    return set;
-  }, [review]);
+  }, [diff]);
 
   // Focus textarea when editor appears
   useEffect(() => {
@@ -221,19 +247,10 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
   }, [focused]);
 
   const handleLineClick = useCallback(
-    (file: string, lineNum: number) => {
+    (rowIndex: number) => {
       if (!review) return;
-
-      setSelectedLines((prev) => {
-        if (prev && prev.file === file) {
-          return {
-            file,
-            start: Math.min(prev.start, lineNum),
-            end: Math.max(prev.end, lineNum),
-          };
-        }
-        return { file, start: lineNum, end: lineNum };
-      });
+      setFocusedIndex(rowIndex);
+      setEditorOpen(true);
     },
     [review]
   );
@@ -251,8 +268,8 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
         commentText.trim()
       );
       setReview(result.review);
-      setSelectedLines(null);
-      setCommentText('');
+      setEditorOpen(false);
+      clearNewComment();
     } catch (e) {
       console.error('Failed to add comment:', e);
     } finally {
@@ -299,18 +316,15 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
           // Create new comment - only works on lines, not threads
           if (!review) return;
           const row = rows[focusedIndex];
-          if (row.type === 'line') {
+          if (row.type === 'line' && row.line.newLineNum !== undefined) {
             e.preventDefault();
-            const lineNum = row.line.newLineNum ?? row.line.oldLineNum ?? 0;
-            if (lineNum > 0) {
-              setSelectedLines({ file: row.file, start: lineNum, end: lineNum });
-            }
+            setEditorOpen(true);
           }
           break;
         }
         case 'Escape': {
-          setSelectedLines(null);
-          setCommentText('');
+          setEditorOpen(false);
+          clearNewComment();
           cancelReply();
           break;
         }
@@ -535,8 +549,8 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
                   e.preventDefault();
                   if (commentText.trim()) handleSubmitComment();
                 } else if (e.key === 'Escape') {
-                  setSelectedLines(null);
-                  setCommentText('');
+                  setEditorOpen(false);
+                  clearNewComment();
                 }
               }}
               placeholder="Add your comment... (Enter to submit, Esc to cancel)"
@@ -546,8 +560,8 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
             <div className="flex justify-end gap-2 mt-2">
               <button
                 onClick={() => {
-                  setSelectedLines(null);
-                  setCommentText('');
+                  setEditorOpen(false);
+                  clearNewComment();
                 }}
                 className="px-3 py-1 text-sm text-gray-500 hover:text-gray-700"
               >
@@ -566,36 +580,30 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
       }
 
       // line row
-      const { file, line } = row;
-      const lineNum = line.newLineNum ?? line.oldLineNum ?? 0;
-      const hasThread = linesWithThreads.has(`${file}:${lineNum}`);
-      // Only highlight selection on lines with newLineNum to avoid duplicates
-      const selected =
-        selectedLines &&
-        selectedLines.file === file &&
-        line.newLineNum !== undefined &&
-        line.newLineNum >= selectedLines.start &&
-        line.newLineNum <= selectedLines.end;
+      const { line } = row;
       const isFocusedLine = idx === focusedIndex;
+      const isEditing = isFocusedLine && editorOpen;
       // Only allow clicking on lines with newLineNum (not pure deletions)
       const canClick = review && line.newLineNum !== undefined && line.newLineNum > 0;
 
       return (
         <div
-          onClick={() => canClick && handleLineClick(file, line.newLineNum!)}
+          onClick={() => canClick && handleLineClick(idx)}
           className={`flex border-l-2 ${
-            isFocusedLine && focused
-              ? 'bg-blue-100'
-              : isFocusedLine
-                ? 'bg-blue-50'
-                : line.type === 'add'
-                  ? 'bg-green-50'
-                  : line.type === 'delete'
-                    ? 'bg-red-50'
-                    : ''
-          } ${selected ? 'bg-blue-200 ring-1 ring-blue-400' : ''} ${
-            hasThread ? 'border-amber-400' : 'border-transparent'
-          } ${canClick && !isFocusedLine ? 'cursor-pointer hover:bg-gray-100' : ''}`}
+            isEditing
+              ? 'bg-blue-200 ring-1 ring-blue-400'
+              : isFocusedLine && focused
+                ? 'bg-blue-100'
+                : isFocusedLine
+                  ? 'bg-blue-50'
+                  : line.type === 'add'
+                    ? 'bg-green-50'
+                    : line.type === 'delete'
+                      ? 'bg-red-50'
+                      : ''
+          } border-transparent ${
+            canClick && !isFocusedLine ? 'cursor-pointer hover:bg-gray-100' : ''
+          }`}
         >
           <span className="w-12 text-right pr-2 select-none shrink-0 text-gray-400">
             {line.oldLineNum ?? ''}
@@ -625,7 +633,6 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
     [
       focusedIndex,
       selectedLines,
-      linesWithThreads,
       review,
       handleLineClick,
       focused,

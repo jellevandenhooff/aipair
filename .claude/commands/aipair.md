@@ -12,4 +12,5 @@ Guidelines:
 - Only set resolve=true if you are CERTAIN the feedback was addressed as the user intended
 - If you disagree or need clarification, reply explaining your reasoning (don't resolve)
 - If feedback was surprising and might reoccur, document it in project guidelines (CLAUDE.md)
-- Be concise
+- If something should be remembered for later, put it in TODO.md or a code comment - review conversations are ephemeral
+- Be concise - don't say "will think about" or "adding to considerations", either do it now or add to TODO.md
