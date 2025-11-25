@@ -144,15 +144,51 @@ async fn list_changes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     .into_response()
 }
 
+/// A single chunk in a text diff
+#[derive(Serialize)]
+struct DiffChunk {
+    /// "equal", "delete", or "insert"
+    tag: &'static str,
+    text: String,
+}
+
+/// Compute a line-based diff between two strings
+fn compute_text_diff(old: &str, new: &str) -> Vec<DiffChunk> {
+    use similar::{ChangeTag, TextDiff};
+
+    let diff = TextDiff::from_lines(old, new);
+    diff.iter_all_changes()
+        .map(|change| {
+            let tag = match change.tag() {
+                ChangeTag::Equal => "equal",
+                ChangeTag::Delete => "delete",
+                ChangeTag::Insert => "insert",
+            };
+            DiffChunk {
+                tag,
+                text: change.value().to_string(),
+            }
+        })
+        .collect()
+}
+
 #[derive(Serialize)]
 struct DiffResponse {
     diff: crate::jj::Diff,
+    /// Commit message for the target revision (when viewing a specific revision)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target_message: Option<String>,
+    /// Line-by-line diff of commit messages (if comparing revisions with different messages)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message_diff: Option<Vec<DiffChunk>>,
 }
 
 #[derive(Deserialize)]
 struct DiffQuery {
     /// Optional commit ID to view diff at (defaults to current working copy)
     commit: Option<String>,
+    /// Optional base commit to compare from (defaults to parent)
+    base: Option<String>,
 }
 
 async fn get_diff(
@@ -162,10 +198,32 @@ async fn get_diff(
 ) -> impl IntoResponse {
     // If a specific commit is requested, use it as the "to" revision
     let to_rev = query.commit.as_deref().unwrap_or(&change_id);
-    match state.jj.diff(to_rev, None) {
-        Ok(diff) => Json(DiffResponse { diff }).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
+
+    let diff = match state.jj.diff(to_rev, query.base.as_deref()) {
+        Ok(diff) => diff,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    // Get target message when viewing a specific revision
+    let target_message = query.commit.as_ref().and_then(|commit| {
+        state.jj.get_change(commit).ok().map(|c| c.description)
+    });
+
+    // Compute message diff when comparing revisions
+    let message_diff = match (query.base.as_ref(), query.commit.as_ref()) {
+        (Some(base), Some(commit)) => {
+            let base_msg = state.jj.get_change(base).ok().map(|c| c.description).unwrap_or_default();
+            let target_msg = target_message.clone().unwrap_or_default();
+            if base_msg != target_msg {
+                Some(compute_text_diff(&base_msg, &target_msg))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+
+    Json(DiffResponse { diff, target_message, message_diff }).into_response()
 }
 
 #[derive(Serialize)]
@@ -173,12 +231,42 @@ struct ReviewResponse {
     review: Option<Review>,
 }
 
+/// Add a virtual pending revision if the current commit differs from the last recorded revision
+fn add_pending_revision_if_needed(mut review: Review, current_commit_id: &str) -> Review {
+    let has_pending = match review.revisions.last() {
+        Some(last_rev) => last_rev.commit_id != current_commit_id,
+        None => true, // No revisions yet, so current state is "pending"
+    };
+
+    if has_pending {
+        let next_number = review.revisions.last().map(|r| r.number + 1).unwrap_or(1);
+        review.revisions.push(crate::review::Revision {
+            number: next_number,
+            commit_id: current_commit_id.to_string(),
+            created_at: chrono::Utc::now(),
+            description: None,
+            is_pending: true,
+        });
+    }
+
+    review
+}
+
 async fn get_review(
     State(state): State<Arc<AppState>>,
     Path(change_id): Path<String>,
 ) -> impl IntoResponse {
+    // Get current commit_id for this change
+    let current_commit_id = state.jj.get_change(&change_id)
+        .map(|c| c.commit_id)
+        .unwrap_or_default();
+
     match state.store.get(&change_id) {
-        Ok(review) => Json(ReviewResponse { review }).into_response(),
+        Ok(Some(review)) => {
+            let review = add_pending_revision_if_needed(review, &current_commit_id);
+            Json(ReviewResponse { review: Some(review) }).into_response()
+        }
+        Ok(None) => Json(ReviewResponse { review: None }).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -196,20 +284,18 @@ async fn create_review(
     let base = req.base.as_deref().unwrap_or("@-");
 
     // Get commit_id for this change
-    let commit_id = match state.jj.log(50) {
-        Ok(changes) => changes
-            .iter()
-            .find(|c| c.change_id == change_id)
-            .map(|c| c.commit_id.clone())
-            .unwrap_or_default(),
-        Err(_) => String::new(),
-    };
+    let current_commit_id = state.jj.get_change(&change_id)
+        .map(|c| c.commit_id)
+        .unwrap_or_default();
 
-    match state.store.get_or_create(&change_id, base, &commit_id) {
-        Ok(review) => Json(ReviewResponse {
-            review: Some(review),
-        })
-        .into_response(),
+    match state.store.get_or_create(&change_id, base, &current_commit_id) {
+        Ok(review) => {
+            let review = add_pending_revision_if_needed(review, &current_commit_id);
+            Json(ReviewResponse {
+                review: Some(review),
+            })
+            .into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

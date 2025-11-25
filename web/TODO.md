@@ -3,7 +3,6 @@
 - MCP server doesn't reload when binary is rebuilt (need to restart Claude Code) - ANNOYING: causes subtle bugs where old code runs silently
 
 # Revision tracking enhancements
-- Revision comparison UI (diff v1→v2 to see what changed between rounds)
 - Thread position tracking/relocation based on diffs (threads "float" to new locations)
 - Revision timeline panel showing history
 - "What's new since last review" banner
@@ -26,6 +25,7 @@
 - Duplicate components for threads
 - Decentralize state: store.ts is accumulating too much (e.g., newCommentText, confirm logic). Consider isDirty ref pattern or component-level state with callbacks.
 - Consider removing line_end from Thread data model (we only use line_start now)
+- Unify commit message display with file diff display ("diffs are diffs") - currently separate code paths in DiffViewer
 
 # Friction
 - Put location in URL (for refreshing)

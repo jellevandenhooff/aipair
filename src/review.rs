@@ -15,6 +15,8 @@ pub struct Revision {
     pub created_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(default)]
+    pub is_pending: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -148,6 +150,7 @@ impl ReviewStore {
             commit_id: commit_id.to_string(),
             created_at: Utc::now(),
             description,
+            is_pending: false,
         });
         review.working_commit_id = Some(commit_id.to_string());
 
@@ -208,6 +211,7 @@ impl ReviewStore {
                 commit_id: commit_id.to_string(),
                 created_at: Utc::now(),
                 description: None,
+                is_pending: false,
             });
         }
         review.working_commit_id = Some(commit_id.to_string());

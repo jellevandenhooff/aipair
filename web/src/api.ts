@@ -13,14 +13,29 @@ export async function fetchChanges(): Promise<Change[]> {
   return data.changes;
 }
 
-export async function fetchDiff(changeId: string, commitId?: string): Promise<Diff> {
-  const url = commitId
-    ? `${API_BASE}/changes/${changeId}/diff?commit=${encodeURIComponent(commitId)}`
+export interface DiffChunk {
+  tag: 'equal' | 'delete' | 'insert';
+  text: string;
+}
+
+export interface DiffResponse {
+  diff: Diff;
+  target_message?: string;
+  message_diff?: DiffChunk[];
+}
+
+export async function fetchDiff(changeId: string, commitId?: string, baseCommitId?: string): Promise<DiffResponse> {
+  const params = new URLSearchParams();
+  if (commitId) params.set('commit', commitId);
+  if (baseCommitId) params.set('base', baseCommitId);
+  const query = params.toString();
+  const url = query
+    ? `${API_BASE}/changes/${changeId}/diff?${query}`
     : `${API_BASE}/changes/${changeId}/diff`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to fetch diff: ${res.statusText}`);
   const data = await res.json();
-  return data.diff;
+  return { diff: data.diff, target_message: data.target_message, message_diff: data.message_diff };
 }
 
 export async function fetchReview(changeId: string): Promise<Review | null> {

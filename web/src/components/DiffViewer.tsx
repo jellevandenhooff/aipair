@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, forwardRef, useImper
 import { VList, VListHandle } from 'virtua';
 import { Thread, addComment } from '../api';
 import { useAppStore } from '../store';
+import { RevisionLabel } from './CommentPanel';
 
 export interface DiffViewerHandle {
   scrollToThread: (threadId: string) => void;
@@ -19,7 +20,7 @@ type Row =
   | { type: 'comment-editor'; file: string; lineStart: number; lineEnd: number }
   | { type: 'collapsed'; file: string; lines: ParsedLine[]; id: string }
   | { type: 'commit-header'; changeId: string; commitId: string }
-  | { type: 'commit-line'; lineNum: number; content: string };
+  | { type: 'commit-line'; lineNum: number; content: string; diffTag?: 'equal' | 'delete' | 'insert' };
 
 interface ParsedLine {
   type: 'context' | 'add' | 'delete';
@@ -200,8 +201,12 @@ function insertInlineRows(
 export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_props, ref) {
   // Get state from store
   const diff = useAppStore((s) => s.diff);
+  const targetMessage = useAppStore((s) => s.targetMessage);
+  const messageDiff = useAppStore((s) => s.messageDiff);
   const review = useAppStore((s) => s.review);
   const selectedChange = useAppStore((s) => s.selectedChange);
+  const selectedRevision = useAppStore((s) => s.selectedRevision);
+  const comparisonBase = useAppStore((s) => s.comparisonBase);
   const focused = useAppStore((s) => s.focusedPanel === 'diff');
   const selectedThreadId = useAppStore((s) => s.selectedThreadId);
   const replyingToThread = useAppStore((s) => s.replyingToThread);
@@ -212,6 +217,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
   const setReview = useAppStore((s) => s.setReview);
   const setCommentText = useAppStore((s) => s.setNewCommentText);
   const clearNewComment = useAppStore((s) => s.clearNewComment);
+  const compareRevisions = useAppStore((s) => s.compareRevisions);
   const startReply = useAppStore((s) => s.startReply);
   const cancelReply = useAppStore((s) => s.cancelReply);
   const setReplyText = useAppStore((s) => s.setReplyText);
@@ -237,21 +243,49 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
 
   // Build commit message rows
   const commitRows = useMemo((): Row[] => {
-    if (!selectedChange?.description) return [];
+    // Use targetMessage if viewing a specific revision, otherwise use current description
+    const messageToShow = targetMessage ?? selectedChange?.description;
+    if (!messageToShow) return [];
 
     const rows: Row[] = [
       {
         type: 'commit-header',
-        changeId: selectedChange.change_id,
-        commitId: selectedChange.commit_id,
+        changeId: selectedChange?.change_id ?? '',
+        commitId: selectedChange?.commit_id ?? '',
       },
     ];
-    const lines = selectedChange.description.split('\n');
-    lines.forEach((content, idx) => {
-      rows.push({ type: 'commit-line', lineNum: idx + 1, content });
-    });
+
+    // If comparing revisions with a message diff, show diff lines
+    if (messageDiff && messageDiff.length > 0) {
+      let lineNum = 1;
+      for (const chunk of messageDiff) {
+        // Split chunk text into lines (preserving empty lines)
+        const chunkLines = chunk.text.split('\n');
+        // The split creates an extra empty string at the end if text ends with \n
+        // We handle this by checking if the last element is empty
+        for (let i = 0; i < chunkLines.length; i++) {
+          const line = chunkLines[i];
+          // Skip the trailing empty string from split (but keep intentional empty lines)
+          if (i === chunkLines.length - 1 && line === '' && chunk.text.endsWith('\n')) {
+            continue;
+          }
+          rows.push({
+            type: 'commit-line',
+            lineNum: lineNum++,
+            content: line,
+            diffTag: chunk.tag,
+          });
+        }
+      }
+    } else {
+      // Normal view: show message (targetMessage for specific revision, or current)
+      const lines = messageToShow.split('\n');
+      lines.forEach((content, idx) => {
+        rows.push({ type: 'commit-line', lineNum: idx + 1, content });
+      });
+    }
     return rows;
-  }, [selectedChange]);
+  }, [selectedChange, targetMessage, messageDiff]);
 
   // Build rows with threads, selectedLines derivation, and editor insertion
   const { rows, selectedLines } = useMemo(() => {
@@ -568,11 +602,8 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
     (row: Row, idx: number) => {
       if (row.type === 'commit-header') {
         return (
-          <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 sticky top-0 z-10 flex items-center justify-between">
+          <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 sticky top-0 z-10">
             <span className="text-amber-700 font-semibold">Commit Message</span>
-            <span className="text-xs text-amber-600/70">
-              {row.changeId.slice(0, 8)} · {row.commitId.slice(0, 8)}
-            </span>
           </div>
         );
       }
@@ -580,6 +611,38 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
       if (row.type === 'commit-line') {
         const isFocusedLine = idx === focusedIndex;
         const isEditing = isFocusedLine && editorOpen;
+        const { diffTag } = row;
+
+        // Background colors based on diff tag
+        const getBgClass = () => {
+          if (isEditing) return 'bg-blue-200 ring-1 ring-blue-400';
+          if (isFocusedLine && focused) {
+            if (diffTag === 'delete') return 'bg-red-200';
+            if (diffTag === 'insert') return 'bg-green-200';
+            return 'bg-amber-100';
+          }
+          if (isFocusedLine) {
+            if (diffTag === 'delete') return 'bg-red-100';
+            if (diffTag === 'insert') return 'bg-green-100';
+            return 'bg-amber-50';
+          }
+          if (diffTag === 'delete') return 'bg-red-50';
+          if (diffTag === 'insert') return 'bg-green-50';
+          if (diffTag === 'equal') return 'bg-yellow-50/50';
+          return 'bg-amber-50/50';
+        };
+
+        const getTextClass = () => {
+          if (diffTag === 'delete') return 'text-red-700';
+          if (diffTag === 'insert') return 'text-green-700';
+          return 'text-gray-700';
+        };
+
+        const getBorderClass = () => {
+          if (diffTag === 'delete') return 'border-r-red-200';
+          if (diffTag === 'insert') return 'border-r-green-200';
+          return 'border-r-amber-200';
+        };
 
         return (
           <div
@@ -589,21 +652,16 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
                 setEditorOpen(true);
               }
             }}
-            className={`flex border-l-2 ${
-              isEditing
-                ? 'bg-blue-200 ring-1 ring-blue-400'
-                : isFocusedLine && focused
-                  ? 'bg-amber-100'
-                  : isFocusedLine
-                    ? 'bg-amber-50'
-                    : 'bg-amber-50/50'
-            } border-transparent ${review && !isFocusedLine ? 'cursor-pointer hover:bg-amber-100' : ''}`}
+            className={`flex border-l-2 ${getBgClass()} border-transparent ${review && !isFocusedLine ? 'cursor-pointer hover:bg-amber-100' : ''}`}
           >
             <span className="w-12 text-right pr-2 select-none shrink-0 text-amber-400">
               {row.lineNum}
             </span>
-            <span className="w-12 text-right pr-4 select-none border-r border-amber-200 shrink-0"></span>
-            <span className="pl-4 whitespace-pre-wrap break-all flex-1 text-gray-700">
+            <span className={`w-12 text-right pr-4 select-none border-r ${getBorderClass()} shrink-0`}>
+              {diffTag === 'delete' && <span className="text-red-400">-</span>}
+              {diffTag === 'insert' && <span className="text-green-400">+</span>}
+            </span>
+            <span className={`pl-4 whitespace-pre-wrap break-all flex-1 ${getTextClass()}`}>
               {row.content || '\u00A0'}
             </span>
           </div>
@@ -885,6 +943,9 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
       replyText,
       setReplyText,
       submittingReply,
+      selectedRevision,
+      comparisonBase,
+      selectedChange,
     ]
   );
 
@@ -892,9 +953,44 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
     return <div className="p-8 text-center text-gray-400">No diff content</div>;
   }
 
+  // Determine what we're showing
+  const latestRevision = review?.revisions[review.revisions.length - 1];
+  const showingRevision = selectedRevision ?? latestRevision;
+  const isComparingRevisions = comparisonBase !== null;
+
   return (
-    <div ref={containerRef} className="h-full font-mono text-sm" tabIndex={0}>
-      <VList ref={listRef} className="h-full" data={rows}>
+    <div ref={containerRef} className="h-full font-mono text-sm flex flex-col" tabIndex={0}>
+      {/* Comparison header */}
+      {showingRevision && (() => {
+        const isPending = showingRevision.is_pending;
+        const bgClass = isComparingRevisions ? 'bg-purple-50 border-purple-200' : isPending ? 'bg-blue-50 border-blue-200' : 'bg-gray-50 border-gray-200';
+        const textClass = isComparingRevisions ? 'text-purple-700' : isPending ? 'text-blue-700' : 'text-gray-600';
+        const fromRevision = comparisonBase ?? 'base';
+
+        return (
+          <div className={`${bgClass} border-b px-4 py-2 flex items-center justify-between shrink-0`}>
+            <span className={`${textClass} text-sm`}>
+              {isComparingRevisions && 'Comparing '}
+              <span className="font-semibold"><RevisionLabel revision={fromRevision} /></span>
+              {' → '}
+              <span className="font-semibold"><RevisionLabel revision={showingRevision} /></span>
+              {!isPending && showingRevision.description && (
+                <span className="ml-2 text-gray-400">— {showingRevision.description}</span>
+              )}
+            </span>
+            {isComparingRevisions && (
+              <button
+                onClick={() => compareRevisions(null, null)}
+                className="text-xs text-purple-600 hover:text-purple-800 underline"
+              >
+                Show full diff
+              </button>
+            )}
+          </div>
+        );
+      })()}
+
+      <VList ref={listRef} className="flex-1" data={rows}>
         {renderRow}
       </VList>
 

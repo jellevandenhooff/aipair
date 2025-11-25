@@ -21,6 +21,9 @@ schemars = "1.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Diff
+similar = "2"
+
 # Utilities
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }

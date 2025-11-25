@@ -1,6 +1,27 @@
 import { useState, useRef, useEffect, forwardRef } from 'react';
-import { Thread } from '../types';
+import { Thread, Revision } from '../types';
 import { useAppStore } from '../store';
+
+/** Displays a revision label: "base", "Pending abc1234", or "v3 abc1234" */
+export function RevisionLabel({ revision, showHash = true }: { revision: Revision | 'base'; showHash?: boolean }) {
+  if (revision === 'base') {
+    return <span className="font-mono">base</span>;
+  }
+  if (revision.is_pending) {
+    return (
+      <span className="font-mono">
+        Pending
+        {showHash && <span className="ml-1 text-gray-400">{revision.commit_id.slice(0, 7)}</span>}
+      </span>
+    );
+  }
+  return (
+    <span className="font-mono">
+      v{revision.number}
+      {showHash && <span className="ml-1 text-gray-400">{revision.commit_id.slice(0, 7)}</span>}
+    </span>
+  );
+}
 
 export function CommentPanel() {
   const review = useAppStore((s) => s.review);
@@ -10,9 +31,11 @@ export function CommentPanel() {
   const selectedThreadId = useAppStore((s) => s.selectedThreadId);
   const selectedRevision = useAppStore((s) => s.selectedRevision);
   const replyingToThread = useAppStore((s) => s.replyingToThread);
+  const comparisonBase = useAppStore((s) => s.comparisonBase);
   const startReply = useAppStore((s) => s.startReply);
   const mergeChange = useAppStore((s) => s.mergeChange);
   const selectRevision = useAppStore((s) => s.selectRevision);
+  const compareRevisions = useAppStore((s) => s.compareRevisions);
 
   const [merging, setMerging] = useState(false);
 
@@ -125,44 +148,55 @@ export function CommentPanel() {
         </div>
       )}
 
-      {/* Revisions section - always show when review exists */}
-      {review && (selectedChange?.has_pending_changes || review.revisions.length > 0) && (
+      {/* Revisions section - always show when review has revisions */}
+      {review && review.revisions.length > 0 && (
         <div className="p-4">
           <h3 className="font-semibold text-sm text-gray-700 mb-2">
-            Revisions ({review.revisions.length})
+            Revisions ({review.revisions.filter(r => !r.is_pending).length})
           </h3>
           <div className="space-y-1">
-            {/* Pending row - only show if there are pending changes */}
-            {selectedChange?.has_pending_changes && (
-              <button
-                onClick={() => selectRevision(null)}
-                className={`w-full text-left px-2 py-1 text-xs rounded transition-colors ${
-                  selectedRevision === null
-                    ? 'bg-blue-100 text-blue-800'
-                    : 'hover:bg-gray-100 text-blue-600'
-                }`}
-              >
-                <span className="font-mono">Pending</span>
-              </button>
-            )}
-            {/* Revisions in reverse order (newest first) */}
-            {[...review.revisions].reverse().map((rev) => (
-              <button
-                key={rev.number}
-                onClick={() => selectRevision(rev)}
-                className={`w-full text-left px-2 py-1 text-xs rounded transition-colors truncate block ${
-                  selectedRevision?.number === rev.number ||
-                  (selectedRevision === null && !selectedChange?.has_pending_changes && rev.number === review.revisions.length)
-                    ? 'bg-blue-100 text-blue-800'
-                    : 'hover:bg-gray-100 text-gray-600'
-                }`}
-              >
-                <span className="font-mono">v{rev.number}</span>
-                {rev.description && (
-                  <span className="ml-2">{rev.description}</span>
-                )}
-              </button>
-            ))}
+            {[...review.revisions].reverse().map((rev, idx, arr) => {
+              const prevRev = arr[idx + 1]; // Previous revision in display order (lower number)
+              // Selected if this revision matches selectedRevision, or if nothing selected and this is latest
+              const effectiveSelected = selectedRevision ?? review.revisions[review.revisions.length - 1];
+              const isSelected = effectiveSelected?.number === rev.number && !comparisonBase;
+              const isComparing = prevRev &&
+                comparisonBase?.number === prevRev.number &&
+                effectiveSelected?.number === rev.number;
+
+              return (
+                <div key={rev.number} className="flex items-center gap-1">
+                  <button
+                    onClick={() => selectRevision(rev)}
+                    className={`flex-1 text-left px-2 py-1 text-xs rounded transition-colors truncate ${
+                      isSelected
+                        ? 'bg-blue-100 text-blue-800'
+                        : rev.is_pending
+                          ? 'hover:bg-gray-100 text-blue-600'
+                          : 'hover:bg-gray-100 text-gray-600'
+                    }`}
+                  >
+                    <RevisionLabel revision={rev} />
+                    {!rev.is_pending && rev.description && (
+                      <span className="ml-2">{rev.description}</span>
+                    )}
+                  </button>
+                  {prevRev && !prevRev.is_pending && (
+                    <button
+                      onClick={() => compareRevisions(prevRev, rev)}
+                      title={`Compare v${prevRev.number} → ${rev.is_pending ? 'pending' : `v${rev.number}`}`}
+                      className={`px-1.5 py-1 text-xs rounded transition-colors ${
+                        isComparing
+                          ? 'bg-purple-100 text-purple-800'
+                          : 'hover:bg-gray-100 text-gray-400 hover:text-gray-600'
+                      }`}
+                    >
+                      Δ
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

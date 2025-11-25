@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import {
   Change,
   Diff,
+  DiffChunk,
   Review,
   fetchChanges as apiFetchChanges,
   fetchDiff,
@@ -21,6 +22,8 @@ interface AppState {
   changes: Change[];
   selectedChange: Change | null;
   diff: Diff | null;
+  targetMessage: string | null; // Commit message for selected revision
+  messageDiff: DiffChunk[] | null;
   review: Review | null;
 
   // Loading/error
@@ -31,6 +34,7 @@ interface AppState {
   focusedPanel: FocusedPanel;
   selectedThreadId: string | null;
   selectedRevision: Revision | null; // null = current working copy
+  comparisonBase: Revision | null; // null = compare to parent, otherwise compare to this revision
 
   // New comment state (for diff lines)
   newCommentText: string;
@@ -65,6 +69,7 @@ interface AppState {
 
   // Revision selection
   selectRevision: (revision: Revision | null) => Promise<void>;
+  compareRevisions: (from: Revision | null, to: Revision | null) => Promise<void>;
 
   // Merge actions
   mergeChange: (changeId: string, force?: boolean) => Promise<{ success: boolean; message: string }>;
@@ -75,12 +80,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   changes: [],
   selectedChange: null,
   diff: null,
+  targetMessage: null,
+  messageDiff: null,
   review: null,
   loading: true,
   error: null,
   focusedPanel: 'changes',
   selectedThreadId: null,
   selectedRevision: null,
+  comparisonBase: null,
   newCommentText: '',
   replyingToThread: false,
   replyText: '',
@@ -111,13 +119,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     if (!change) {
-      set({ selectedChange: null, diff: null, review: null, selectedThreadId: null, selectedRevision: null, newCommentText: '' });
+      set({ selectedChange: null, diff: null, review: null, selectedThreadId: null, selectedRevision: null, comparisonBase: null, newCommentText: '' });
       return;
     }
 
-    set({ selectedChange: change, loading: true, selectedRevision: null, newCommentText: '' });
+    set({ selectedChange: change, loading: true, selectedRevision: null, comparisonBase: null, newCommentText: '' });
     try {
-      const [diff, review] = await Promise.all([
+      const [diffResponse, review] = await Promise.all([
         fetchDiff(change.change_id),
         fetchReview(change.change_id),
       ]);
@@ -125,9 +133,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Auto-create review if it doesn't exist
       if (!review) {
         const newReview = await createReview(change.change_id);
-        set({ diff, review: newReview, loading: false, selectedThreadId: null });
+        set({ diff: diffResponse.diff, targetMessage: diffResponse.target_message ?? null, messageDiff: diffResponse.message_diff ?? null, review: newReview, loading: false, selectedThreadId: null });
       } else {
-        set({ diff, review, loading: false, selectedThreadId: null });
+        set({ diff: diffResponse.diff, targetMessage: diffResponse.target_message ?? null, messageDiff: diffResponse.message_diff ?? null, review, loading: false, selectedThreadId: null });
       }
     } catch (e) {
       set({ error: (e as Error).message, loading: false });
@@ -135,7 +143,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   refreshData: async () => {
-    const { selectedChange } = get();
+    const { selectedChange, selectedRevision, comparisonBase } = get();
 
     try {
       // Always refresh changes list
@@ -147,16 +155,17 @@ export const useAppStore = create<AppState>((set, get) => ({
         // Find the updated version of the selected change
         const updatedChange = changes.find((c) => c.change_id === selectedChange.change_id);
         if (!updatedChange) {
-          set({ selectedChange: null, diff: null, review: null, selectedThreadId: null, selectedRevision: null });
+          set({ selectedChange: null, diff: null, review: null, selectedThreadId: null, selectedRevision: null, comparisonBase: null });
           return;
         }
 
-        const [diff, review] = await Promise.all([
-          fetchDiff(selectedChange.change_id),
+        // Preserve current revision/comparison view when refreshing
+        const [diffResponse, review] = await Promise.all([
+          fetchDiff(selectedChange.change_id, selectedRevision?.commit_id, comparisonBase?.commit_id),
           fetchReview(selectedChange.change_id),
         ]);
         // Update selectedChange to the new object with updated merged/pending status
-        set({ selectedChange: updatedChange, diff, review });
+        set({ selectedChange: updatedChange, diff: diffResponse.diff, targetMessage: diffResponse.target_message ?? null, messageDiff: diffResponse.message_diff ?? null, review });
       }
     } catch (e) {
       // Silently ignore refresh errors to avoid spamming the user
@@ -289,13 +298,38 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { selectedChange } = get();
     if (!selectedChange) return;
 
-    set({ selectedRevision: revision, loading: true });
+    set({ selectedRevision: revision, comparisonBase: null, loading: true });
     try {
       // Fetch diff at specific commit, or current if null
-      const diff = await fetchDiff(selectedChange.change_id, revision?.commit_id);
-      set({ diff, loading: false });
+      const diffResponse = await fetchDiff(selectedChange.change_id, revision?.commit_id);
+      set({ diff: diffResponse.diff, targetMessage: diffResponse.target_message ?? null, messageDiff: diffResponse.message_diff ?? null, loading: false });
     } catch (e) {
       console.error('Failed to load revision diff:', e);
+      set({ loading: false });
+    }
+  },
+
+  // Compare two revisions (including pending, which is just a revision with is_pending: true)
+  // - compareRevisions(from, to): compare from revision to to revision
+  // - compareRevisions(null, to): clear comparison, show revision vs base
+  // - compareRevisions(null, null): clear comparison, show latest revision vs base
+  compareRevisions: async (from, to) => {
+    const { selectedChange, selectedRevision } = get();
+    if (!selectedChange) return;
+
+    // When clearing comparison (from=null), keep the current selectedRevision if to not specified
+    const newSelectedRevision = from === null ? (to ?? selectedRevision) : to;
+
+    set({ selectedRevision: newSelectedRevision, comparisonBase: from, loading: true });
+    try {
+      const diffResponse = await fetchDiff(
+        selectedChange.change_id,
+        newSelectedRevision?.commit_id,
+        from?.commit_id
+      );
+      set({ diff: diffResponse.diff, targetMessage: diffResponse.target_message ?? null, messageDiff: diffResponse.message_diff ?? null, loading: false });
+    } catch (e) {
+      console.error('Failed to load comparison:', e);
       set({ loading: false });
     }
   },
