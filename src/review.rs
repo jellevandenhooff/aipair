@@ -103,6 +103,36 @@ impl ReviewStore {
         Ok(Some(review))
     }
 
+    /// Get a review by change_id prefix (supports short IDs like "zwlsqumm")
+    pub fn get_by_prefix(&self, prefix: &str) -> Result<Option<Review>> {
+        // First try exact match
+        if let Some(review) = self.get(prefix)? {
+            return Ok(Some(review));
+        }
+
+        // Search for files matching the prefix
+        let entries = std::fs::read_dir(&self.base_path)?;
+        let mut matches = Vec::new();
+
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with(prefix) && name_str.ends_with(".json") {
+                matches.push(entry.path());
+            }
+        }
+
+        match matches.len() {
+            0 => Ok(None),
+            1 => {
+                let content = std::fs::read_to_string(&matches[0])?;
+                let review: Review = serde_json::from_str(&content)?;
+                Ok(Some(review))
+            }
+            _ => anyhow::bail!("Ambiguous change_id prefix '{}': matches {} reviews", prefix, matches.len()),
+        }
+    }
+
     pub fn save(&self, review: &Review) -> Result<()> {
         self.init()?;
         let path = self.review_path(&review.change_id);
@@ -260,6 +290,26 @@ impl ReviewStore {
         Ok((review, thread_id))
     }
 
+    /// Find a thread by ID or prefix in a review
+    fn find_thread_mut<'a>(threads: &'a mut [Thread], thread_id_prefix: &str) -> Result<&'a mut Thread> {
+        // Try exact match first
+        if let Some(idx) = threads.iter().position(|t| t.id == thread_id_prefix) {
+            return Ok(&mut threads[idx]);
+        }
+
+        // Try prefix match
+        let matches: Vec<_> = threads.iter().enumerate()
+            .filter(|(_, t)| t.id.starts_with(thread_id_prefix))
+            .map(|(i, _)| i)
+            .collect();
+
+        match matches.len() {
+            0 => anyhow::bail!("Thread not found: {}", thread_id_prefix),
+            1 => Ok(&mut threads[matches[0]]),
+            _ => anyhow::bail!("Ambiguous thread_id prefix '{}': matches {} threads", thread_id_prefix, matches.len()),
+        }
+    }
+
     pub fn reply_to_thread(
         &self,
         change_id: &str,
@@ -268,14 +318,10 @@ impl ReviewStore {
         text: &str,
     ) -> Result<Review> {
         let mut review = self
-            .get(change_id)?
+            .get_by_prefix(change_id)?
             .ok_or_else(|| anyhow::anyhow!("Review not found for change: {}", change_id))?;
 
-        let thread = review
-            .threads
-            .iter_mut()
-            .find(|t| t.id == thread_id)
-            .ok_or_else(|| anyhow::anyhow!("Thread not found: {}", thread_id))?;
+        let thread = Self::find_thread_mut(&mut review.threads, thread_id)?;
 
         thread.comments.push(Comment {
             author,
@@ -289,14 +335,10 @@ impl ReviewStore {
 
     pub fn resolve_thread(&self, change_id: &str, thread_id: &str) -> Result<Review> {
         let mut review = self
-            .get(change_id)?
+            .get_by_prefix(change_id)?
             .ok_or_else(|| anyhow::anyhow!("Review not found for change: {}", change_id))?;
 
-        let thread = review
-            .threads
-            .iter_mut()
-            .find(|t| t.id == thread_id)
-            .ok_or_else(|| anyhow::anyhow!("Thread not found: {}", thread_id))?;
+        let thread = Self::find_thread_mut(&mut review.threads, thread_id)?;
 
         thread.status = ThreadStatus::Resolved;
         self.save(&review)?;
@@ -305,14 +347,10 @@ impl ReviewStore {
 
     pub fn reopen_thread(&self, change_id: &str, thread_id: &str) -> Result<Review> {
         let mut review = self
-            .get(change_id)?
+            .get_by_prefix(change_id)?
             .ok_or_else(|| anyhow::anyhow!("Review not found for change: {}", change_id))?;
 
-        let thread = review
-            .threads
-            .iter_mut()
-            .find(|t| t.id == thread_id)
-            .ok_or_else(|| anyhow::anyhow!("Thread not found: {}", thread_id))?;
+        let thread = Self::find_thread_mut(&mut review.threads, thread_id)?;
 
         thread.status = ThreadStatus::Open;
         self.save(&review)?;

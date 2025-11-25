@@ -98,6 +98,7 @@ export function CommentPanel() {
     });
   const totalThreads = (review?.threads.length ?? 0);
   const hasOpenThreads = openThreads.length > 0;
+  const hasNoDescription = !selectedChange?.description?.trim();
 
   return (
     <div className="divide-y divide-gray-200">
@@ -110,16 +111,21 @@ export function CommentPanel() {
             <>
               <button
                 onClick={() => handleMerge(false)}
-                disabled={merging || loading}
+                disabled={merging || loading || hasNoDescription}
                 className={`w-full px-4 py-2 rounded font-medium transition-colors ${
-                  loading || hasOpenThreads || selectedChange.has_pending_changes
+                  loading || hasOpenThreads || selectedChange.has_pending_changes || hasNoDescription
                     ? 'bg-gray-100 text-gray-500 hover:bg-gray-200'
                     : 'bg-green-600 text-white hover:bg-green-700'
                 } disabled:opacity-50`}
               >
                 {merging ? 'Merging...' : 'Merge'}
               </button>
-              {selectedChange.has_pending_changes && (
+              {hasNoDescription && (
+                <p className="text-xs text-red-600 mt-2">
+                  No commit message. Use <code className="bg-gray-100 px-1 rounded">jj describe -m "..."</code> to set one.
+                </p>
+              )}
+              {!hasNoDescription && selectedChange.has_pending_changes && (
                 <p className="text-xs text-blue-600 mt-2">
                   Pending changes not recorded as a revision.{' '}
                   <button
@@ -131,7 +137,7 @@ export function CommentPanel() {
                   </button>
                 </p>
               )}
-              {hasOpenThreads && !selectedChange.has_pending_changes && (
+              {!hasNoDescription && hasOpenThreads && !selectedChange.has_pending_changes && (
                 <p className="text-xs text-amber-600 mt-2">
                   {openThreads.length} open thread{openThreads.length !== 1 ? 's' : ''} remaining.{' '}
                   <button

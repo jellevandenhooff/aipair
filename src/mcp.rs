@@ -96,6 +96,18 @@ impl ReviewService {
             .find(|c| c.change_id.starts_with(&req.change_id) || req.change_id.starts_with(&c.change_id))
             .ok_or_else(|| mcp_error(format!("Change not found: {}", req.change_id)))?;
 
+        // Check if there are actual changes since the last revision
+        if let Ok(Some(review)) = store.get_by_prefix(&change.change_id) {
+            if let Some(last_rev) = review.revisions.last() {
+                if last_rev.commit_id == change.commit_id {
+                    return Err(mcp_error(format!(
+                        "No changes since last revision (v{}). Make changes before recording a new revision.",
+                        last_rev.number
+                    )));
+                }
+            }
+        }
+
         let (_, revision_number) = store
             .record_revision(&change.change_id, &change.commit_id, Some(req.description.clone()))
             .map_err(|e| mcp_error(e.to_string()))?;
@@ -136,12 +148,12 @@ impl ReviewService {
                 continue;
             }
 
-            output.push_str(&format!("## Change: {}\n\n", review.change_id));
+            output.push_str(&format!("## Change: {}\n\n", &review.change_id[..8.min(review.change_id.len())]));
 
             for thread in open_threads {
                 output.push_str(&format!(
                     "### Thread {} - {}:{}-{}\n\n",
-                    thread.id, thread.file, thread.line_start, thread.line_end
+                    &thread.id[..8.min(thread.id.len())], thread.file, thread.line_start, thread.line_end
                 ));
 
                 // Try to get code context

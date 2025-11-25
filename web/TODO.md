@@ -22,6 +22,7 @@
 - Duplicate components for threads
 - Decentralize state: store.ts is accumulating too much (e.g., newCommentText, confirm logic). Consider isDirty ref pattern or component-level state with callbacks.
 - Consider removing line_end from Thread data model (we only use line_start now)
+- Move "no commit message" check from frontend to backend (return merge eligibility info from API)
 
 # Friction
 - Put location in URL (for refreshing)

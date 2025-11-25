@@ -29,7 +29,7 @@ const ChangeItem = forwardRef<HTMLButtonElement, ChangeItemProps>(function Chang
       }`}
     >
       <div className="flex items-center gap-2">
-        <span className="font-mono text-xs text-gray-400">{change.change_id.slice(0, 12)}</span>
+        <span className="font-mono text-xs text-gray-400">{change.change_id.slice(0, 8)}</span>
         {isMain && (
           <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-medium">
             main
