@@ -260,6 +260,45 @@ impl Jj {
 
         Ok(String::from_utf8(output.stdout)?)
     }
+
+    /// Get the change_id that a bookmark points to, if it exists
+    pub fn get_bookmark(&self, name: &str) -> Result<Option<String>> {
+        let output = Command::new("jj")
+            .current_dir(&self.repo_path)
+            .args(["log", "--no-graph", "-r", name, "-T", "change_id"])
+            .output()
+            .context("Failed to run jj log for bookmark")?;
+
+        if !output.status.success() {
+            // Bookmark doesn't exist
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("doesn't exist") {
+                return Ok(None);
+            }
+            anyhow::bail!("jj log failed: {}", stderr);
+        }
+
+        let change_id = String::from_utf8(output.stdout)?.trim().to_string();
+        Ok(Some(change_id))
+    }
+
+    /// Move a bookmark to point to a specific change
+    pub fn move_bookmark(&self, name: &str, change_id: &str) -> Result<()> {
+        let output = Command::new("jj")
+            .current_dir(&self.repo_path)
+            .args(["bookmark", "set", name, "-r", change_id])
+            .output()
+            .context("Failed to run jj bookmark set")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "jj bookmark set failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

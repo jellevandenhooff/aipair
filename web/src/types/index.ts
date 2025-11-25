@@ -8,6 +8,7 @@ export interface Change {
   author: string;
   timestamp: string;
   empty: boolean;
+  merged: boolean;
 }
 
 export interface FileDiff {

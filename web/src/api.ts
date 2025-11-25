@@ -97,3 +97,21 @@ export async function reopenThread(
   const data = await res.json();
   return data.review;
 }
+
+export interface MergeResult {
+  success: boolean;
+  message: string;
+}
+
+export async function mergeChange(changeId: string, force = false): Promise<MergeResult> {
+  const res = await fetch(`${API_BASE}/changes/${changeId}/merge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ force }),
+  });
+  const data = await res.json();
+  if (!res.ok && !data.message) {
+    throw new Error(`Failed to merge: ${res.statusText}`);
+  }
+  return data;
+}

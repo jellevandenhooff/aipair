@@ -40,6 +40,7 @@ pub async fn serve(port: u16) -> anyhow::Result<()> {
         .route("/api/changes/{change_id}/threads/{thread_id}/reply", post(reply_to_thread))
         .route("/api/changes/{change_id}/threads/{thread_id}/resolve", post(resolve_thread))
         .route("/api/changes/{change_id}/threads/{thread_id}/reopen", post(reopen_thread))
+        .route("/api/changes/{change_id}/merge", post(merge_change))
         .with_state(state)
         .layer(cors);
 
@@ -56,16 +57,51 @@ async fn health() -> &'static str {
     "ok"
 }
 
+/// Change with merged status for API response
+#[derive(Serialize)]
+struct ChangeWithStatus {
+    #[serde(flatten)]
+    change: crate::jj::Change,
+    merged: bool,
+}
+
 #[derive(Serialize)]
 struct ChangesResponse {
-    changes: Vec<crate::jj::Change>,
+    changes: Vec<ChangeWithStatus>,
+    main_change_id: Option<String>,
 }
 
 async fn list_changes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.jj.log(20) {
-        Ok(changes) => Json(ChangesResponse { changes }).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    }
+    let changes = match state.jj.log(20) {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    let main_change_id = match state.jj.get_bookmark("main") {
+        Ok(id) => id,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    // A change is merged if it appears at or after the main bookmark in the ancestor list
+    // The list is ordered newest to oldest, so we find main's position and mark everything from there
+    let main_idx = main_change_id
+        .as_ref()
+        .and_then(|main_id| changes.iter().position(|c| &c.change_id == main_id));
+
+    let changes_with_status: Vec<ChangeWithStatus> = changes
+        .into_iter()
+        .enumerate()
+        .map(|(idx, change)| {
+            let merged = main_idx.map(|mi| idx >= mi).unwrap_or(false);
+            ChangeWithStatus { change, merged }
+        })
+        .collect();
+
+    Json(ChangesResponse {
+        changes: changes_with_status,
+        main_change_id,
+    })
+    .into_response()
 }
 
 #[derive(Serialize)]
@@ -182,6 +218,73 @@ async fn reopen_thread(
 ) -> impl IntoResponse {
     match state.store.reopen_thread(&change_id, &thread_id) {
         Ok(review) => Json(ReviewResponse { review: Some(review) }).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct MergeRequest {
+    #[serde(default)]
+    force: bool,
+}
+
+#[derive(Serialize)]
+struct MergeResponse {
+    success: bool,
+    message: String,
+}
+
+async fn merge_change(
+    State(state): State<Arc<AppState>>,
+    Path(change_id): Path<String>,
+    Json(req): Json<MergeRequest>,
+) -> impl IntoResponse {
+    // Check if already merged
+    let main_change_id = match state.jj.get_bookmark("main") {
+        Ok(id) => id,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    if main_change_id.as_ref() == Some(&change_id) {
+        return Json(MergeResponse {
+            success: false,
+            message: "Change is already at main".to_string(),
+        })
+        .into_response();
+    }
+
+    // Check if all threads are resolved (unless force)
+    if !req.force {
+        if let Ok(Some(review)) = state.store.get(&change_id) {
+            let open_threads: Vec<_> = review
+                .threads
+                .iter()
+                .filter(|t| t.status == crate::review::ThreadStatus::Open)
+                .collect();
+
+            if !open_threads.is_empty() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(MergeResponse {
+                        success: false,
+                        message: format!(
+                            "Cannot merge: {} open thread(s). Use force=true to override.",
+                            open_threads.len()
+                        ),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // Move the bookmark
+    match state.jj.move_bookmark("main", &change_id) {
+        Ok(()) => Json(MergeResponse {
+            success: true,
+            message: format!("Merged: main now at {}", &change_id[..8.min(change_id.len())]),
+        })
+        .into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }

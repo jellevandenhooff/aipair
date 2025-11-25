@@ -1,13 +1,18 @@
-import { useRef, useEffect, forwardRef } from 'react';
+import { useState, useRef, useEffect, forwardRef } from 'react';
 import { Thread } from '../api';
 import { useAppStore } from '../store';
 
 export function CommentPanel() {
   const review = useAppStore((s) => s.review);
+  const selectedChange = useAppStore((s) => s.selectedChange);
+  const loading = useAppStore((s) => s.loading);
   const focused = useAppStore((s) => s.focusedPanel === 'threads');
   const selectedThreadId = useAppStore((s) => s.selectedThreadId);
   const replyingToThread = useAppStore((s) => s.replyingToThread);
   const startReply = useAppStore((s) => s.startReply);
+  const mergeChange = useAppStore((s) => s.mergeChange);
+
+  const [merging, setMerging] = useState(false);
 
   const replyInputRef = useRef<HTMLTextAreaElement>(null);
   const threadRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -43,21 +48,64 @@ export function CommentPanel() {
     }
   }, [replyingToThread, focused]);
 
-  if (!review || review.threads.length === 0) {
-    return (
-      <div className="p-4 text-gray-400 text-sm">
-        No comments yet. Click on lines in the diff to add comments.
-      </div>
-    );
-  }
+  const handleMerge = async (force = false) => {
+    if (!selectedChange) return;
+    setMerging(true);
+    try {
+      await mergeChange(selectedChange.change_id, force);
+    } catch (e) {
+      // TODO: use a toast or global error state for merge failures
+      console.error('Merge failed:', e);
+    } finally {
+      setMerging(false);
+    }
+  };
 
-  const openThreads = review.threads.filter((t) => t.status === 'open');
-  const resolvedThreads = review.threads.filter((t) => t.status === 'resolved');
+  const openThreads = review?.threads.filter((t) => t.status === 'open') ?? [];
+  const resolvedThreads = review?.threads.filter((t) => t.status === 'resolved') ?? [];
+  const totalThreads = (review?.threads.length ?? 0);
+  const hasOpenThreads = openThreads.length > 0;
 
   return (
     <div className="divide-y divide-gray-200">
+      {/* Merge section */}
+      {selectedChange && (
+        <div className="p-4">
+          {selectedChange.merged ? (
+            <div className="text-sm text-green-600 font-medium">✓ Merged</div>
+          ) : (
+            <>
+              <button
+                onClick={() => handleMerge(false)}
+                disabled={merging || loading}
+                className={`w-full px-4 py-2 rounded font-medium transition-colors ${
+                  loading || hasOpenThreads
+                    ? 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                    : 'bg-green-600 text-white hover:bg-green-700'
+                } disabled:opacity-50`}
+              >
+                {merging ? 'Merging...' : 'Merge'}
+              </button>
+              {hasOpenThreads && (
+                <p className="text-xs text-amber-600 mt-2">
+                  {openThreads.length} open thread{openThreads.length !== 1 ? 's' : ''} remaining.{' '}
+                  <button
+                    onClick={() => handleMerge(true)}
+                    disabled={merging}
+                    className="underline hover:text-amber-700"
+                  >
+                    Force merge
+                  </button>
+                </p>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Comments header */}
       <div className="p-4">
-        <h3 className="font-semibold text-sm text-gray-700">Comments ({review.threads.length})</h3>
+        <h3 className="font-semibold text-sm text-gray-700">Comments ({totalThreads})</h3>
         <p className="text-xs text-gray-400 mt-1">
           {focused ? 'j/k: navigate | r: reply | x: resolve' : 'Tab to focus'}
         </p>

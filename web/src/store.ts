@@ -10,6 +10,7 @@ import {
   replyToThread,
   resolveThread,
   reopenThread,
+  mergeChange as apiMergeChange,
 } from './api';
 
 type FocusedPanel = 'changes' | 'diff' | 'threads';
@@ -59,6 +60,9 @@ interface AppState {
   // Navigation helpers
   navigateChanges: (direction: 'up' | 'down') => void;
   navigateThreads: (direction: 'up' | 'down') => void;
+
+  // Merge actions
+  mergeChange: (changeId: string, force?: boolean) => Promise<{ success: boolean; message: string }>;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -272,5 +276,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     set({ selectedThreadId: threadIds[nextIdx] });
+  },
+
+  // Merge actions
+  mergeChange: async (changeId, force = false) => {
+    const result = await apiMergeChange(changeId, force);
+    if (result.success) {
+      // Refresh to get updated merged status
+      await get().refreshData();
+    }
+    return result;
   },
 }));
