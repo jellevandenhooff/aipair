@@ -29,10 +29,16 @@ test-integration:
     cargo build
     cargo test --test integration_test
 
-# Build everything
-build:
-    cargo build --release
+# Build everything (web first, then rust embeds it)
+build: build-rust
+
+# Build frontend only
+build-web:
     cd web && npm run build
+
+# Build rust binary (release, depends on web assets)
+build-rust: build-web
+    cargo build --release --features bundled-frontend
 
 # Type check everything
 check:
@@ -53,6 +59,11 @@ fmt:
 lint:
     cargo clippy -- -D warnings
     cd web && npm run lint
+
+# Install aipair binary to ~/.local/bin
+install: build
+    mkdir -p ~/.local/bin
+    cp target/release/aipair ~/.local/bin/
 
 # Clean build artifacts
 clean:

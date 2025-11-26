@@ -5,6 +5,8 @@ use axum::{
     response::IntoResponse,
     routing::{get, post},
 };
+#[cfg(feature = "bundled-frontend")]
+use axum::http::header;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
@@ -13,6 +15,43 @@ use tracing::info;
 
 use crate::jj::Jj;
 use crate::review::{Author, Review, ReviewStore};
+
+#[cfg(feature = "bundled-frontend")]
+mod embedded {
+    use rust_embed::Embed;
+
+    #[derive(Embed)]
+    #[folder = "web/dist"]
+    pub struct Assets;
+}
+
+#[cfg(feature = "bundled-frontend")]
+async fn static_handler(uri: axum::http::Uri) -> impl IntoResponse {
+    let path = uri.path().trim_start_matches('/');
+
+    // Try to serve the exact file
+    if let Some(content) = embedded::Assets::get(path) {
+        let mime = mime_guess::from_path(path).first_or_octet_stream();
+        return (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, mime.as_ref())],
+            content.data.into_owned(),
+        )
+            .into_response();
+    }
+
+    // For SPA routing: serve index.html for non-file paths
+    if let Some(content) = embedded::Assets::get("index.html") {
+        return (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/html")],
+            content.data.into_owned(),
+        )
+            .into_response();
+    }
+
+    (StatusCode::NOT_FOUND, "Not found").into_response()
+}
 
 struct AppState {
     jj: Jj,
@@ -46,13 +85,22 @@ pub async fn serve(port: u16) -> anyhow::Result<()> {
         .route("/api/changes/{change_id}/threads/{thread_id}/reopen", post(reopen_thread))
         .route("/api/changes/{change_id}/merge", post(merge_change))
         .with_state(state)
-        .merge(mcp_router)
-        .layer(cors)
-        .layer(TraceLayer::new_for_http());
+        .merge(mcp_router);
+
+    // Add static file serving for bundled frontend
+    #[cfg(feature = "bundled-frontend")]
+    let app = app.fallback(static_handler);
+
+    let app = app.layer(cors).layer(TraceLayer::new_for_http());
 
     let addr = format!("0.0.0.0:{}", port);
     info!("Starting server on http://localhost:{}", port);
     info!("MCP endpoint available at http://localhost:{}/mcp", port);
+
+    #[cfg(feature = "bundled-frontend")]
+    info!("Web UI available at http://localhost:{}", port);
+    #[cfg(not(feature = "bundled-frontend"))]
+    info!("Web UI not bundled - run 'npm run dev' in web/ for development");
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
@@ -82,7 +130,7 @@ struct ChangesResponse {
 }
 
 async fn list_changes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let changes = match state.jj.log(20) {
+    let changes = match state.jj.log(100) {
         Ok(c) => c,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
@@ -327,7 +375,7 @@ async fn add_comment(
     Json(req): Json<AddCommentRequest>,
 ) -> impl IntoResponse {
     // Get commit_id for this change
-    let commit_id = match state.jj.log(50) {
+    let commit_id = match state.jj.log(100) {
         Ok(changes) => changes
             .iter()
             .find(|c| c.change_id == change_id)

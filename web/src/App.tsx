@@ -1,51 +1,69 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useMemo, useLayoutEffect } from 'react';
 import { DiffViewer, DiffViewerHandle } from './components/DiffViewer';
 import { ChangeList } from './components/ChangeList';
 import { CommentPanel } from './components/CommentPanel';
 import { useAppStore } from './store';
+import { useChanges, useDiff, useReview } from './hooks';
 
 export default function App() {
-  const changes = useAppStore((s) => s.changes);
-  const selectedChange = useAppStore((s) => s.selectedChange);
-  const diff = useAppStore((s) => s.diff);
-  const review = useAppStore((s) => s.review);
-  const loading = useAppStore((s) => s.loading);
-  const error = useAppStore((s) => s.error);
+  // UI state from Zustand
+  const selectedChangeId = useAppStore((s) => s.selectedChangeId);
+  const selectedRevision = useAppStore((s) => s.selectedRevision);
+  const comparisonBase = useAppStore((s) => s.comparisonBase);
   const focusedPanel = useAppStore((s) => s.focusedPanel);
 
-  const fetchChanges = useAppStore((s) => s.fetchChanges);
-  const refreshData = useAppStore((s) => s.refreshData);
+  const selectChange = useAppStore((s) => s.selectChange);
+  const selectRevision = useAppStore((s) => s.selectRevision);
   const setFocusedPanel = useAppStore((s) => s.setFocusedPanel);
   const cyclePanel = useAppStore((s) => s.cyclePanel);
   const navigateChanges = useAppStore((s) => s.navigateChanges);
   const navigateThreads = useAppStore((s) => s.navigateThreads);
-  const toggleThreadStatus = useAppStore((s) => s.toggleThreadStatus);
-  const clearError = useAppStore((s) => s.clearError);
+
+  // Data from SWR
+  const { data: changes = [], error: changesError, isLoading: changesLoading } = useChanges();
+  const { data: diffResponse, error: diffError } = useDiff(
+    selectedChangeId,
+    selectedRevision?.commit_id,
+    comparisonBase?.commit_id
+  );
+  const { data: review } = useReview(selectedChangeId);
+
+  // Find the full change object for the selected ID
+  const selectedChange = useMemo(
+    () => changes.find((c) => c.change_id === selectedChangeId) ?? null,
+    [changes, selectedChangeId]
+  );
 
   const diffViewerRef = useRef<DiffViewerHandle>(null);
+  const lastReviewChangeIdRef = useRef<string | null>(null);
 
-  // Initial fetch
-  useEffect(() => {
-    fetchChanges();
-  }, [fetchChanges]);
+  // Sync selectedRevision with review data - when a new review loads, set revision to latest
+  // Using useLayoutEffect to update before paint, avoiding flash
+  useLayoutEffect(() => {
+    if (!review) return;
 
-  // Poll for updates every 3 seconds
-  useEffect(() => {
-    const interval = setInterval(() => {
-      refreshData();
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [refreshData]);
+    // Only update when the review's change_id changes (new change selected)
+    if (lastReviewChangeIdRef.current === review.change_id) return;
+    lastReviewChangeIdRef.current = review.change_id;
+
+    // Set selectedRevision to the latest revision
+    if (review.revisions.length > 0) {
+      const latestRevision = review.revisions[review.revisions.length - 1];
+      selectRevision(latestRevision);
+    }
+  }, [review, selectRevision]);
 
   // Keyboard navigation
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return;
 
+      const hasThreads = (review?.threads.length ?? 0) > 0;
+
       // Tab cycles through panels
       if (e.key === 'Tab') {
         e.preventDefault();
-        cyclePanel(e.shiftKey);
+        cyclePanel(e.shiftKey, hasThreads);
         return;
       }
 
@@ -53,42 +71,37 @@ export default function App() {
       if (focusedPanel === 'changes' && changes.length > 0) {
         if (e.key === 'j' || e.key === 'ArrowDown') {
           e.preventDefault();
-          navigateChanges('down');
+          navigateChanges('down', changes, selectChange);
         } else if (e.key === 'k' || e.key === 'ArrowUp') {
           e.preventDefault();
-          navigateChanges('up');
+          navigateChanges('up', changes, selectChange);
         }
       }
 
       // j/k for threads when focused on threads panel
-      if (focusedPanel === 'threads') {
-        const { selectedThreadId } = useAppStore.getState();
+      if (focusedPanel === 'threads' && review) {
+        const threadIds = review.threads.map((t) => t.id);
 
         if (e.key === 'j' || e.key === 'ArrowDown') {
           e.preventDefault();
-          navigateThreads('down');
+          navigateThreads('down', threadIds);
         } else if (e.key === 'k' || e.key === 'ArrowUp') {
           e.preventDefault();
-          navigateThreads('up');
-        } else if (e.key === 'x' && selectedThreadId) {
-          e.preventDefault();
-          toggleThreadStatus(selectedThreadId);
+          navigateThreads('up', threadIds);
         }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [focusedPanel, changes.length, cyclePanel, navigateChanges, navigateThreads, toggleThreadStatus]);
+  }, [focusedPanel, changes, review, cyclePanel, navigateChanges, navigateThreads, selectChange]);
 
+  const error = changesError || diffError;
   if (error) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="bg-red-100 text-red-800 p-4 rounded-lg border border-red-200">
-          Error: {error}
-          <button onClick={clearError} className="ml-4 underline">
-            Dismiss
-          </button>
+          Error: {(error as Error).message}
         </div>
       </div>
     );
@@ -102,19 +115,32 @@ export default function App() {
           className="w-80 border-r border-gray-200 overflow-y-auto bg-gray-50"
           onClick={() => setFocusedPanel('changes')}
         >
-          <ChangeList />
+          <ChangeList
+            changes={changes}
+            selectedChangeId={selectedChangeId}
+            onSelectChange={selectChange}
+            loading={changesLoading}
+          />
         </aside>
 
         {/* Main content */}
         <main className="flex-1 flex flex-col overflow-hidden">
-          {selectedChange && diff ? (
+          {selectedChange && diffResponse ? (
             <>
               <div className="flex-1 flex overflow-hidden">
                 <div
                   className="flex-1 overflow-auto"
                   onClick={() => setFocusedPanel('diff')}
                 >
-                  <DiffViewer ref={diffViewerRef} />
+                  <DiffViewer
+                    ref={diffViewerRef}
+                    diff={diffResponse.diff}
+                    targetMessage={diffResponse.target_message}
+                    messageDiff={diffResponse.message_diff}
+                    review={review ?? null}
+                    changeId={selectedChangeId!}
+                    description={selectedChange?.description}
+                  />
                 </div>
 
                 {review && (
@@ -122,14 +148,17 @@ export default function App() {
                     className="w-96 border-l border-gray-200 overflow-y-auto bg-gray-50"
                     onClick={() => setFocusedPanel('threads')}
                   >
-                    <CommentPanel />
+                    <CommentPanel
+                      review={review}
+                      selectedChange={selectedChange}
+                    />
                   </aside>
                 )}
               </div>
             </>
           ) : (
             <div className="flex-1 flex items-center justify-center text-gray-400">
-              {loading ? 'Loading...' : 'Select a change to view'}
+              {changesLoading ? 'Loading...' : 'Select a change to view'}
             </div>
           )}
         </main>

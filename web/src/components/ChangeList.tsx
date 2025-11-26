@@ -64,22 +64,25 @@ const ChangeItem = forwardRef<HTMLButtonElement, ChangeItemProps>(function Chang
   );
 });
 
-export function ChangeList() {
-  const changes = useAppStore((s) => s.changes);
-  const selectedChange = useAppStore((s) => s.selectedChange);
-  const loading = useAppStore((s) => s.loading);
+interface ChangeListProps {
+  changes: Change[];
+  selectedChangeId: string | null;
+  onSelectChange: (changeId: string) => void;
+  loading: boolean;
+}
+
+export function ChangeList({ changes, selectedChangeId, onSelectChange, loading }: ChangeListProps) {
   const focused = useAppStore((s) => s.focusedPanel === 'changes');
-  const selectChange = useAppStore((s) => s.selectChange);
 
   const changeRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
 
   // Scroll selected change into view when it changes
   useEffect(() => {
-    if (selectedChange && focused) {
-      const el = changeRefs.current.get(selectedChange.change_id);
+    if (selectedChangeId && focused) {
+      const el = changeRefs.current.get(selectedChangeId);
       el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
-  }, [selectedChange?.change_id, focused]);
+  }, [selectedChangeId, focused]);
 
   if (loading && changes.length === 0) {
     return <div className="p-3 text-gray-400 text-sm">Loading changes...</div>;
@@ -95,7 +98,7 @@ export function ChangeList() {
   return (
     <div className="divide-y divide-gray-200">
       {changes.map((change, idx) => {
-        const isSelected = selectedChange?.change_id === change.change_id;
+        const isSelected = selectedChangeId === change.change_id;
         const isMain = idx === mainChangeIdx;
 
         return (
@@ -109,7 +112,7 @@ export function ChangeList() {
             isSelected={isSelected}
             focused={focused}
             isMain={isMain}
-            onClick={() => selectChange(change)}
+            onClick={() => onSelectChange(change.change_id)}
           />
         );
       })}

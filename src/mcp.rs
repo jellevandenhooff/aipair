@@ -90,7 +90,7 @@ impl ReviewService {
         let store = ReviewStore::new(jj.repo_path());
 
         // Get current commit_id for this change
-        let changes = jj.log(50).map_err(|e| mcp_error(e.to_string()))?;
+        let changes = jj.log(100).map_err(|e| mcp_error(e.to_string()))?;
         let change = changes
             .iter()
             .find(|c| c.change_id.starts_with(&req.change_id) || req.change_id.starts_with(&c.change_id))

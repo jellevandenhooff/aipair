@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, forwardRef } from 'react';
 import { Thread, Revision } from '../types';
 import { useAppStore } from '../store';
+import { replyToThread, resolveThread, reopenThread, mergeChange, type Change, type Review } from '../hooks';
 
 /** Displays a revision label: "base", "Pending abc1234", or "v3 abc1234" */
 export function RevisionLabel({ revision, showHash = true }: { revision: Revision | 'base'; showHash?: boolean }) {
@@ -23,19 +24,20 @@ export function RevisionLabel({ revision, showHash = true }: { revision: Revisio
   );
 }
 
-export function CommentPanel() {
-  const review = useAppStore((s) => s.review);
-  const selectedChange = useAppStore((s) => s.selectedChange);
-  const loading = useAppStore((s) => s.loading);
+interface CommentPanelProps {
+  review: Review | null;
+  selectedChange: Change | null;
+}
+
+export function CommentPanel({ review, selectedChange }: CommentPanelProps) {
   const focused = useAppStore((s) => s.focusedPanel === 'threads');
   const selectedThreadId = useAppStore((s) => s.selectedThreadId);
   const selectedRevision = useAppStore((s) => s.selectedRevision);
   const replyingToThread = useAppStore((s) => s.replyingToThread);
   const comparisonBase = useAppStore((s) => s.comparisonBase);
   const startReply = useAppStore((s) => s.startReply);
-  const mergeChange = useAppStore((s) => s.mergeChange);
   const selectRevision = useAppStore((s) => s.selectRevision);
-  const compareRevisions = useAppStore((s) => s.compareRevisions);
+  const setComparisonBase = useAppStore((s) => s.setComparisonBase);
 
   const [merging, setMerging] = useState(false);
 
@@ -77,13 +79,20 @@ export function CommentPanel() {
     if (!selectedChange) return;
     setMerging(true);
     try {
-      await mergeChange(selectedChange.change_id, force);
+      const result = await mergeChange(selectedChange.change_id, force);
+      if (!result.success) {
+        console.error('Merge failed:', result.message);
+      }
     } catch (e) {
-      // TODO: use a toast or global error state for merge failures
       console.error('Merge failed:', e);
     } finally {
       setMerging(false);
     }
+  };
+
+  const handleCompareRevisions = (fromRev: Revision | null, toRev: Revision | null) => {
+    selectRevision(toRev);
+    setComparisonBase(fromRev);
   };
 
   const openThreads = review?.threads.filter((t) => t.status === 'open') ?? [];
@@ -111,9 +120,9 @@ export function CommentPanel() {
             <>
               <button
                 onClick={() => handleMerge(false)}
-                disabled={merging || loading || hasNoDescription}
+                disabled={merging || hasNoDescription}
                 className={`w-full px-4 py-2 rounded font-medium transition-colors ${
-                  loading || hasOpenThreads || selectedChange.has_pending_changes || hasNoDescription
+                  hasOpenThreads || selectedChange.has_pending_changes || hasNoDescription
                     ? 'bg-gray-100 text-gray-500 hover:bg-gray-200'
                     : 'bg-green-600 text-white hover:bg-green-700'
                 } disabled:opacity-50`}
@@ -189,7 +198,7 @@ export function CommentPanel() {
                   </button>
                   {prevRev && !prevRev.is_pending && (
                     <button
-                      onClick={() => compareRevisions(prevRev, rev)}
+                      onClick={() => handleCompareRevisions(prevRev, rev)}
                       title={`Compare v${prevRev.number} → ${rev.is_pending ? 'pending' : `v${rev.number}`}`}
                       className={`px-1.5 py-1 text-xs rounded transition-colors ${
                         isComparing
@@ -229,6 +238,7 @@ export function CommentPanel() {
                   else threadRefs.current.delete(thread.id);
                 }}
                 thread={thread}
+                changeId={review!.change_id}
                 replyInputRef={selectedThreadId === thread.id ? replyInputRef : undefined}
               />
             ))}
@@ -250,6 +260,7 @@ export function CommentPanel() {
                   else threadRefs.current.delete(thread.id);
                 }}
                 thread={thread}
+                changeId={review!.change_id}
                 replyInputRef={undefined}
               />
             ))}
@@ -262,11 +273,12 @@ export function CommentPanel() {
 
 interface ThreadCardProps {
   thread: Thread;
+  changeId: string;
   replyInputRef?: React.RefObject<HTMLTextAreaElement>;
 }
 
 const ThreadCard = forwardRef<HTMLDivElement, ThreadCardProps>(function ThreadCard(
-  { thread, replyInputRef },
+  { thread, changeId, replyInputRef },
   ref
 ) {
   // Get state from store
@@ -280,11 +292,36 @@ const ThreadCard = forwardRef<HTMLDivElement, ThreadCardProps>(function ThreadCa
   const startReply = useAppStore((s) => s.startReply);
   const cancelReply = useAppStore((s) => s.cancelReply);
   const setReplyText = useAppStore((s) => s.setReplyText);
-  const submitReply = useAppStore((s) => s.submitReply);
-  const toggleThreadStatus = useAppStore((s) => s.toggleThreadStatus);
+  const setSubmittingReply = useAppStore((s) => s.setSubmittingReply);
 
   const selected = selectedThreadId === thread.id;
   const replying = replyingToThread && selected && focused;
+
+  const handleSubmitReply = async () => {
+    if (!replyText.trim()) return;
+    setSubmittingReply(true);
+    try {
+      await replyToThread(changeId, thread.id, replyText.trim());
+      setReplyText('');
+      cancelReply();
+    } catch (e) {
+      console.error('Failed to reply:', e);
+    } finally {
+      setSubmittingReply(false);
+    }
+  };
+
+  const handleToggleStatus = async () => {
+    try {
+      if (thread.status === 'open') {
+        await resolveThread(changeId, thread.id);
+      } else {
+        await reopenThread(changeId, thread.id);
+      }
+    } catch (e) {
+      console.error('Failed to toggle thread status:', e);
+    }
+  };
 
   return (
     <div
@@ -332,7 +369,7 @@ const ThreadCard = forwardRef<HTMLDivElement, ThreadCardProps>(function ThreadCa
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                toggleThreadStatus(thread.id);
+                handleToggleStatus();
               }}
               className="px-2 py-1 text-xs text-amber-600 hover:text-amber-700 hover:bg-amber-50 rounded"
             >
@@ -347,7 +384,7 @@ const ThreadCard = forwardRef<HTMLDivElement, ThreadCardProps>(function ThreadCa
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
-                    if (replyText.trim()) submitReply(thread.id);
+                    handleSubmitReply();
                   } else if (e.key === 'Escape') {
                     cancelReply();
                   }
@@ -369,7 +406,7 @@ const ThreadCard = forwardRef<HTMLDivElement, ThreadCardProps>(function ThreadCa
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (replyText.trim()) submitReply(thread.id);
+                    handleSubmitReply();
                   }}
                   disabled={!replyText.trim() || submittingReply}
                   className="px-3 py-1 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50"
@@ -383,7 +420,7 @@ const ThreadCard = forwardRef<HTMLDivElement, ThreadCardProps>(function ThreadCa
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  toggleThreadStatus(thread.id);
+                  handleToggleStatus();
                 }}
                 className="px-2 py-1 text-xs text-green-600 hover:text-green-700 hover:bg-green-50 rounded"
               >

@@ -1,3 +1,32 @@
+- feedback thoughts: need to pin the "head" revision so when we edit it's ok?
+- need to add some agent instructions (when we install? run aipair?)
+    - teach it jj absorb
+    - teach it to make edits commits at a time
+    - teach it to fix rebase errors
+    - ???
+    - teach it to not do too many things at once?
+    - teach it to write feedback incrementally?
+    - maybe let it paginate?
+    - encourage honesty and precision; "you are a professional engineer; we want small and correct chnages"
+    - encourage addressing all comments
+    - encourage either fixing it, or leaving TODO in the code
+    - to the mcp tool, add info timestamps on comments?
+    - to the mcp tool, add commit information with lines (so that claude also doesn't get confused)
+    - to the mcp tool, add diff context (that i see but claude doesn't!!)
+    - to the mcp tool, add support for tracked/not tracked changes? so we know what we are working on
+    - when addressing feedback, tell it to consider either making the changes in commits, or on latest and then squashing (as appropriate)
+    - tell it to be careful with restore and undo
+    - STROSNGLY encourage working on feedback one-by-one (if possible), and addressing and making revisions (maybe add functionality for sub-revisions????), so that code "works at all times". 
+        - add mcp tool for letting it mark things as active??? relating edits to specific feedback items???
+    - tell not to respond to comments if it hasn't done it yet
+- MAKE SURE main is immutable???
+- use interdiff to check diffs between diffs
+- move comments when diffs change?
+- file headers in ui, navigate between files, make sure search works
+- support markdown in comments
+- in the MCP responses leave hints/reminders on what to do?
+
+
 # Review loop
 
 # Revision tracking enhancements
@@ -33,6 +62,8 @@
 - Resolving thread moves it, messing with navigation
 - "?" to see hotkeys (maybe something cute to always show hints?)
 - Change list is quite space-consuming
+- Add .aipair to .gitignore on install
+- Add aipair slash command on install
 
 # Features
 - Show file list in diff

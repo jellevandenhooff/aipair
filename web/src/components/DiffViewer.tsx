@@ -1,11 +1,22 @@
 import { useState, useEffect, useCallback, useMemo, useRef, forwardRef, useImperativeHandle } from 'react';
 import { VList, VListHandle } from 'virtua';
-import { Thread, addComment } from '../api';
+import { Thread, Diff, Review, addComment, DiffChunk } from '../api';
 import { useAppStore } from '../store';
+import { replyToThread, resolveThread, reopenThread } from '../hooks';
 import { RevisionLabel } from './CommentPanel';
+import { mutate } from 'swr';
 
 export interface DiffViewerHandle {
   scrollToThread: (threadId: string) => void;
+}
+
+interface DiffViewerProps {
+  diff: Diff;
+  targetMessage?: string;
+  messageDiff?: DiffChunk[];
+  review: Review | null;
+  changeId: string;
+  description?: string; // Current change description
 }
 
 // Special file name for commit message threads
@@ -198,13 +209,11 @@ function insertInlineRows(
   return result;
 }
 
-export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_props, ref) {
-  // Get state from store
-  const diff = useAppStore((s) => s.diff);
-  const targetMessage = useAppStore((s) => s.targetMessage);
-  const messageDiff = useAppStore((s) => s.messageDiff);
-  const review = useAppStore((s) => s.review);
-  const selectedChange = useAppStore((s) => s.selectedChange);
+export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function DiffViewer(
+  { diff, targetMessage, messageDiff, review, changeId, description },
+  ref
+) {
+  // Get UI state from store
   const selectedRevision = useAppStore((s) => s.selectedRevision);
   const comparisonBase = useAppStore((s) => s.comparisonBase);
   const focused = useAppStore((s) => s.focusedPanel === 'diff');
@@ -214,15 +223,13 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
   const submittingReply = useAppStore((s) => s.submittingReply);
   const commentText = useAppStore((s) => s.newCommentText);
 
-  const setReview = useAppStore((s) => s.setReview);
   const setCommentText = useAppStore((s) => s.setNewCommentText);
   const clearNewComment = useAppStore((s) => s.clearNewComment);
-  const compareRevisions = useAppStore((s) => s.compareRevisions);
+  const setComparisonBase = useAppStore((s) => s.setComparisonBase);
   const startReply = useAppStore((s) => s.startReply);
   const cancelReply = useAppStore((s) => s.cancelReply);
   const setReplyText = useAppStore((s) => s.setReplyText);
-  const submitReply = useAppStore((s) => s.submitReply);
-  const toggleThreadStatus = useAppStore((s) => s.toggleThreadStatus);
+  const setSubmittingReply = useAppStore((s) => s.setSubmittingReply);
 
   // Local state
   const [focusedIndex, setFocusedIndex] = useState(0);
@@ -237,21 +244,20 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
 
   // Parse diff into base rows
   const baseRows = useMemo(() => {
-    if (!diff) return [];
     return parseDiffToRows(diff.raw, expandedSections);
-  }, [diff?.raw, expandedSections]);
+  }, [diff.raw, expandedSections]);
 
   // Build commit message rows
   const commitRows = useMemo((): Row[] => {
     // Use targetMessage if viewing a specific revision, otherwise use current description
-    const messageToShow = targetMessage ?? selectedChange?.description;
+    const messageToShow = targetMessage ?? description;
     if (!messageToShow) return [];
 
     const rows: Row[] = [
       {
         type: 'commit-header',
-        changeId: selectedChange?.change_id ?? '',
-        commitId: selectedChange?.commit_id ?? '',
+        changeId: changeId,
+        commitId: '', // Commit ID not directly available from diff
       },
     ];
 
@@ -285,7 +291,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
       });
     }
     return rows;
-  }, [selectedChange, targetMessage, messageDiff]);
+  }, [changeId, description, targetMessage, messageDiff]);
 
   // Build rows with threads, selectedLines derivation, and editor insertion
   const { rows, selectedLines } = useMemo(() => {
@@ -449,18 +455,19 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
   }, []);
 
   const handleSubmitComment = useCallback(async () => {
-    if (!selectedLines || !commentText.trim() || !review) return;
+    if (!selectedLines || !commentText.trim() || !changeId) return;
 
     setSubmitting(true);
     try {
       const result = await addComment(
-        review.change_id,
+        changeId,
         selectedLines.file,
         selectedLines.start,
         selectedLines.end,
         commentText.trim()
       );
-      setReview(result.review);
+      // Update SWR cache with new review
+      mutate(['review', changeId], result.review, false);
       setEditorOpen(false);
       clearNewComment();
     } catch (e) {
@@ -468,7 +475,37 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
     } finally {
       setSubmitting(false);
     }
-  }, [selectedLines, commentText, review, setReview]);
+  }, [selectedLines, commentText, changeId, clearNewComment]);
+
+  const handleSubmitReply = useCallback(async (threadId: string) => {
+    if (!replyText.trim() || !changeId) return;
+    setSubmittingReply(true);
+    try {
+      await replyToThread(changeId, threadId, replyText.trim());
+      setReplyText('');
+      cancelReply();
+    } catch (e) {
+      console.error('Failed to reply:', e);
+    } finally {
+      setSubmittingReply(false);
+    }
+  }, [replyText, changeId, setReplyText, cancelReply, setSubmittingReply]);
+
+  const handleToggleThreadStatus = useCallback(async (threadId: string) => {
+    if (!changeId || !review) return;
+    const thread = review.threads.find((t) => t.id === threadId);
+    if (!thread) return;
+
+    try {
+      if (thread.status === 'open') {
+        await resolveThread(changeId, threadId);
+      } else {
+        await reopenThread(changeId, threadId);
+      }
+    } catch (e) {
+      console.error('Failed to toggle thread status:', e);
+    }
+  }, [changeId, review]);
 
   // Keyboard navigation
   useEffect(() => {
@@ -586,7 +623,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
           const row = rows[focusedIndex];
           if (row.type === 'thread') {
             e.preventDefault();
-            toggleThreadStatus(row.thread.id);
+            handleToggleThreadStatus(row.thread.id);
           }
           break;
         }
@@ -595,7 +632,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [focusedIndex, navigableIndices, rows, review, focused, startReply, toggleThreadStatus, cancelReply, handleExpandSection]);
+  }, [focusedIndex, navigableIndices, rows, review, focused, startReply, handleToggleThreadStatus, cancelReply, handleExpandSection]);
 
   // Render function - only called for visible rows
   const renderRow = useCallback(
@@ -729,7 +766,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      toggleThreadStatus(thread.id);
+                      handleToggleThreadStatus(thread.id);
                     }}
                     className="px-2 py-1 text-xs text-amber-600 hover:text-amber-700 hover:bg-amber-50 rounded"
                   >
@@ -746,7 +783,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' && !e.shiftKey) {
                           e.preventDefault();
-                          if (replyText.trim()) submitReply(thread.id);
+                          if (replyText.trim()) handleSubmitReply(thread.id);
                         } else if (e.key === 'Escape') {
                           cancelReply();
                         }
@@ -769,7 +806,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          if (replyText.trim()) submitReply(thread.id);
+                          if (replyText.trim()) handleSubmitReply(thread.id);
                         }}
                         disabled={!replyText.trim() || submittingReply}
                         className="px-3 py-1 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50"
@@ -783,7 +820,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        toggleThreadStatus(thread.id);
+                        handleToggleThreadStatus(thread.id);
                       }}
                       className="px-2 py-1 text-xs text-green-600 hover:text-green-700 hover:bg-green-100 rounded"
                     >
@@ -937,15 +974,14 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
       selectedThreadId,
       replyingToThread,
       startReply,
-      submitReply,
+      handleSubmitReply,
       cancelReply,
-      toggleThreadStatus,
+      handleToggleThreadStatus,
       replyText,
       setReplyText,
       submittingReply,
       selectedRevision,
       comparisonBase,
-      selectedChange,
     ]
   );
 
@@ -980,7 +1016,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, {}>(function DiffViewer(_
             </span>
             {isComparingRevisions && (
               <button
-                onClick={() => compareRevisions(null, null)}
+                onClick={() => setComparisonBase(null)}
                 className="text-xs text-purple-600 hover:text-purple-800 underline"
               >
                 Show full diff

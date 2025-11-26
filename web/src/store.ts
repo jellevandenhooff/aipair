@@ -1,40 +1,18 @@
 import { create } from 'zustand';
-import {
-  Change,
-  Diff,
-  DiffChunk,
-  Review,
-  fetchChanges as apiFetchChanges,
-  fetchDiff,
-  fetchReview,
-  createReview,
-  replyToThread,
-  resolveThread,
-  reopenThread,
-  mergeChange as apiMergeChange,
-} from './api';
+import type { Change } from './api';
 import type { Revision } from './types';
 
 type FocusedPanel = 'changes' | 'diff' | 'threads';
 
 interface AppState {
-  // Data
-  changes: Change[];
-  selectedChange: Change | null;
-  diff: Diff | null;
-  targetMessage: string | null; // Commit message for selected revision
-  messageDiff: DiffChunk[] | null;
-  review: Review | null;
-
-  // Loading/error
-  loading: boolean;
-  error: string | null;
+  // Selection state
+  selectedChangeId: string | null;
+  selectedRevision: Revision | null;
+  comparisonBase: Revision | null;
 
   // UI state
   focusedPanel: FocusedPanel;
   selectedThreadId: string | null;
-  selectedRevision: Revision | null; // null = current working copy
-  comparisonBase: Revision | null; // null = compare to parent, otherwise compare to this revision
 
   // New comment state (for diff lines)
   newCommentText: string;
@@ -45,14 +23,10 @@ interface AppState {
   submittingReply: boolean;
 
   // Actions
-  fetchChanges: () => Promise<void>;
-  selectChange: (change: Change | null) => Promise<void>;
-  refreshData: () => Promise<void>;
+  selectChange: (changeId: string | null) => void;
   setFocusedPanel: (panel: FocusedPanel) => void;
-  cyclePanel: (reverse: boolean) => void;
+  cyclePanel: (reverse: boolean, hasThreads: boolean) => void;
   setSelectedThreadId: (id: string | null) => void;
-  setReview: (review: Review) => void;
-  clearError: () => void;
   setNewCommentText: (text: string) => void;
   clearNewComment: () => void;
 
@@ -60,124 +34,54 @@ interface AppState {
   startReply: (threadId: string) => void;
   cancelReply: () => void;
   setReplyText: (text: string) => void;
-  submitReply: (threadId: string) => Promise<void>;
-  toggleThreadStatus: (threadId: string) => Promise<void>;
-
-  // Navigation helpers
-  navigateChanges: (direction: 'up' | 'down') => void;
-  navigateThreads: (direction: 'up' | 'down') => void;
+  setSubmittingReply: (submitting: boolean) => void;
 
   // Revision selection
-  selectRevision: (revision: Revision | null) => Promise<void>;
-  compareRevisions: (from: Revision | null, to: Revision | null) => Promise<void>;
+  selectRevision: (revision: Revision | null) => void;
+  setComparisonBase: (revision: Revision | null) => void;
 
-  // Merge actions
-  mergeChange: (changeId: string, force?: boolean) => Promise<{ success: boolean; message: string }>;
+  // Navigation helpers
+  navigateChanges: (direction: 'up' | 'down', changes: Change[], selectChange: (id: string) => void) => void;
+  navigateThreads: (direction: 'up' | 'down', threadIds: string[]) => void;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
   // Initial state
-  changes: [],
-  selectedChange: null,
-  diff: null,
-  targetMessage: null,
-  messageDiff: null,
-  review: null,
-  loading: true,
-  error: null,
-  focusedPanel: 'changes',
-  selectedThreadId: null,
+  selectedChangeId: null,
   selectedRevision: null,
   comparisonBase: null,
+  focusedPanel: 'changes',
+  selectedThreadId: null,
   newCommentText: '',
   replyingToThread: false,
   replyText: '',
   submittingReply: false,
 
   // Actions
-  // NOTE: Async actions have potential race conditions (e.g., rapid clicks could
-  // cause responses to arrive out of order). Common solutions: AbortController to
-  // cancel stale requests, or tracking request IDs to ignore outdated responses.
-  // For now we accept this limitation since it's unlikely in normal use.
-  fetchChanges: async () => {
-    set({ loading: true, error: null });
-    try {
-      const changes = await apiFetchChanges();
-      set({ changes, loading: false });
-    } catch (e) {
-      set({ error: (e as Error).message, loading: false });
-    }
-  },
-
-  selectChange: async (change) => {
-    const { newCommentText, selectedChange } = get();
+  selectChange: (changeId) => {
+    const { newCommentText, selectedChangeId } = get();
 
     // Check for unsaved comment text when switching changes
-    if (change && selectedChange && change.change_id !== selectedChange.change_id && newCommentText.trim()) {
+    if (changeId && selectedChangeId && changeId !== selectedChangeId && newCommentText.trim()) {
       const confirmed = window.confirm('You have an unsaved comment. Discard it?');
       if (!confirmed) return;
     }
 
-    if (!change) {
-      set({ selectedChange: null, diff: null, review: null, selectedThreadId: null, selectedRevision: null, comparisonBase: null, newCommentText: '' });
-      return;
-    }
-
-    set({ selectedChange: change, loading: true, selectedRevision: null, comparisonBase: null, newCommentText: '' });
-    try {
-      const [diffResponse, review] = await Promise.all([
-        fetchDiff(change.change_id),
-        fetchReview(change.change_id),
-      ]);
-
-      // Auto-create review if it doesn't exist
-      if (!review) {
-        const newReview = await createReview(change.change_id);
-        set({ diff: diffResponse.diff, targetMessage: diffResponse.target_message ?? null, messageDiff: diffResponse.message_diff ?? null, review: newReview, loading: false, selectedThreadId: null });
-      } else {
-        set({ diff: diffResponse.diff, targetMessage: diffResponse.target_message ?? null, messageDiff: diffResponse.message_diff ?? null, review, loading: false, selectedThreadId: null });
-      }
-    } catch (e) {
-      set({ error: (e as Error).message, loading: false });
-    }
-  },
-
-  refreshData: async () => {
-    const { selectedChange, selectedRevision, comparisonBase } = get();
-
-    try {
-      // Always refresh changes list
-      const changes = await apiFetchChanges();
-      set({ changes });
-
-      // If a change is selected, refresh its diff and review
-      if (selectedChange) {
-        // Find the updated version of the selected change
-        const updatedChange = changes.find((c) => c.change_id === selectedChange.change_id);
-        if (!updatedChange) {
-          set({ selectedChange: null, diff: null, review: null, selectedThreadId: null, selectedRevision: null, comparisonBase: null });
-          return;
-        }
-
-        // Preserve current revision/comparison view when refreshing
-        const [diffResponse, review] = await Promise.all([
-          fetchDiff(selectedChange.change_id, selectedRevision?.commit_id, comparisonBase?.commit_id),
-          fetchReview(selectedChange.change_id),
-        ]);
-        // Update selectedChange to the new object with updated merged/pending status
-        set({ selectedChange: updatedChange, diff: diffResponse.diff, targetMessage: diffResponse.target_message ?? null, messageDiff: diffResponse.message_diff ?? null, review });
-      }
-    } catch (e) {
-      // Silently ignore refresh errors to avoid spamming the user
-      console.error('Refresh failed:', e);
-    }
+    set({
+      selectedChangeId: changeId,
+      selectedRevision: null,
+      comparisonBase: null,
+      selectedThreadId: null,
+      newCommentText: '',
+      replyingToThread: false,
+      replyText: '',
+    });
   },
 
   setFocusedPanel: (panel) => set({ focusedPanel: panel }),
 
-  cyclePanel: (reverse) => {
-    const { focusedPanel, review } = get();
-    const hasThreads = (review?.threads.length ?? 0) > 0;
+  cyclePanel: (reverse, hasThreads) => {
+    const { focusedPanel } = get();
 
     if (reverse) {
       if (focusedPanel === 'changes') {
@@ -202,10 +106,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ selectedThreadId: id, replyingToThread: false, replyText: '' });
   },
 
-  setReview: (review) => set({ review }),
-
-  clearError: () => set({ error: null }),
-
   setNewCommentText: (text) => set({ newCommentText: text }),
 
   clearNewComment: () => set({ newCommentText: '' }),
@@ -221,50 +121,24 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setReplyText: (text) => set({ replyText: text }),
 
-  submitReply: async (threadId) => {
-    const { replyText, review } = get();
-    if (!replyText.trim() || !review) return;
+  setSubmittingReply: (submitting) => set({ submittingReply: submitting }),
 
-    set({ submittingReply: true });
-    try {
-      const updatedReview = await replyToThread(review.change_id, threadId, replyText.trim());
-      set({
-        review: updatedReview,
-        replyText: '',
-        replyingToThread: false,
-        submittingReply: false,
-      });
-    } catch (e) {
-      console.error('Failed to reply:', e);
-      set({ submittingReply: false });
-    }
+  // Revision selection
+  selectRevision: (revision) => {
+    set({ selectedRevision: revision, comparisonBase: null });
   },
 
-  toggleThreadStatus: async (threadId) => {
-    const { review } = get();
-    if (!review) return;
-
-    const thread = review.threads.find((t) => t.id === threadId);
-    if (!thread) return;
-
-    try {
-      const updatedReview =
-        thread.status === 'open'
-          ? await resolveThread(review.change_id, threadId)
-          : await reopenThread(review.change_id, threadId);
-      set({ review: updatedReview });
-    } catch (e) {
-      console.error('Failed to toggle thread status:', e);
-    }
+  setComparisonBase: (revision) => {
+    set({ comparisonBase: revision });
   },
 
   // Navigation helpers
-  navigateChanges: (direction) => {
-    const { changes, selectedChange } = get();
+  navigateChanges: (direction, changes, selectChangeFn) => {
+    const { selectedChangeId } = get();
     if (changes.length === 0) return;
 
-    const currentIdx = selectedChange
-      ? changes.findIndex((c) => c.change_id === selectedChange.change_id)
+    const currentIdx = selectedChangeId
+      ? changes.findIndex((c) => c.change_id === selectedChangeId)
       : -1;
 
     const nextIdx =
@@ -273,12 +147,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         : Math.max(currentIdx - 1, 0);
 
     if (nextIdx === currentIdx) return;
-    get().selectChange(changes[nextIdx]);
+    selectChangeFn(changes[nextIdx].change_id);
   },
 
-  navigateThreads: (direction) => {
-    const { review, selectedThreadId } = get();
-    const threadIds = review?.threads.map((t) => t.id) || [];
+  navigateThreads: (direction, threadIds) => {
+    const { selectedThreadId } = get();
     if (threadIds.length === 0) return;
 
     const currentIdx = selectedThreadId ? threadIds.indexOf(selectedThreadId) : -1;
@@ -291,56 +164,5 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     set({ selectedThreadId: threadIds[nextIdx] });
-  },
-
-  // Revision selection
-  selectRevision: async (revision) => {
-    const { selectedChange } = get();
-    if (!selectedChange) return;
-
-    set({ selectedRevision: revision, comparisonBase: null, loading: true });
-    try {
-      // Fetch diff at specific commit, or current if null
-      const diffResponse = await fetchDiff(selectedChange.change_id, revision?.commit_id);
-      set({ diff: diffResponse.diff, targetMessage: diffResponse.target_message ?? null, messageDiff: diffResponse.message_diff ?? null, loading: false });
-    } catch (e) {
-      console.error('Failed to load revision diff:', e);
-      set({ loading: false });
-    }
-  },
-
-  // Compare two revisions (including pending, which is just a revision with is_pending: true)
-  // - compareRevisions(from, to): compare from revision to to revision
-  // - compareRevisions(null, to): clear comparison, show revision vs base
-  // - compareRevisions(null, null): clear comparison, show latest revision vs base
-  compareRevisions: async (from, to) => {
-    const { selectedChange, selectedRevision } = get();
-    if (!selectedChange) return;
-
-    // When clearing comparison (from=null), keep the current selectedRevision if to not specified
-    const newSelectedRevision = from === null ? (to ?? selectedRevision) : to;
-
-    set({ selectedRevision: newSelectedRevision, comparisonBase: from, loading: true });
-    try {
-      const diffResponse = await fetchDiff(
-        selectedChange.change_id,
-        newSelectedRevision?.commit_id,
-        from?.commit_id
-      );
-      set({ diff: diffResponse.diff, targetMessage: diffResponse.target_message ?? null, messageDiff: diffResponse.message_diff ?? null, loading: false });
-    } catch (e) {
-      console.error('Failed to load comparison:', e);
-      set({ loading: false });
-    }
-  },
-
-  // Merge actions
-  mergeChange: async (changeId, force = false) => {
-    const result = await apiMergeChange(changeId, force);
-    if (result.success) {
-      // Refresh to get updated merged status
-      await get().refreshData();
-    }
-    return result;
   },
 }));
