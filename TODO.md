@@ -1,3 +1,39 @@
+# Priority (Dec 2024)
+
+1. Stabilize React: Suspense migration, no UI flash, simple hook pattern
+2. Comments don't jump: interdiff, relocate threads when code moves
+3. Commit workflow: show all commits, cherry-pick, exploratory vs shipping modes
+4. MCP improvements: diff context, remind Claude to record revisions
+5. Issue/TODO tracking: so Claude can't "forget" things
+
+---
+
+- todo (and maybe issue) tracking in ui
+
+- flexible commit wrangling; allow cherry pick (vs always merge everything)
+- somehow better claude handling of commit stacks; strongly encourage "keeping things organized"
+    - commits across code bases
+    - unrelated files
+    - formatting
+    - lockfiles etc
+
+- multi workspace (docker??? CLOUD EVEN???) plan
+    - manage (tm) what changes we are working on where???
+    - move changes to/from workspaces???
+    - terminal in different workspaces???
+
+- shareable/deployable???
+    - docker, maybe, but don't want to require perhaps?
+    - workspaces/reviewing orthogonal??? don't bundle??
+
+- fast iteration (tm) support:
+    - think about issues with the current structure
+    - think about file formats
+    - think about react structure (esp. with fetching things, suspense, feedback???)
+    - think about having a sample repo to test aipair on? or a way to revert to a non-broken version?
+    - self-testing flow
+
+- rename support
 - feedback thoughts: need to pin the "head" revision so when we edit it's ok?
 - need to add some agent instructions (when we install? run aipair?)
     - teach it jj absorb
@@ -10,10 +46,12 @@
     - encourage honesty and precision; "you are a professional engineer; we want small and correct chnages"
     - encourage addressing all comments
     - encourage either fixing it, or leaving TODO in the code
+    - to the mcp tool, allow tracking/mentioning only some reviews (so you don't get old comments)
     - to the mcp tool, add info timestamps on comments?
     - to the mcp tool, add commit information with lines (so that claude also doesn't get confused)
     - to the mcp tool, add diff context (that i see but claude doesn't!!)
     - to the mcp tool, add support for tracked/not tracked changes? so we know what we are working on
+    - deal with these "pending" commits on commits i've merged
     - when addressing feedback, tell it to consider either making the changes in commits, or on latest and then squashing (as appropriate)
     - tell it to be careful with restore and undo
     - STROSNGLY encourage working on feedback one-by-one (if possible), and addressing and making revisions (maybe add functionality for sub-revisions????), so that code "works at all times". 
