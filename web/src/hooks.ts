@@ -13,51 +13,64 @@ import {
   type Review,
 } from './api';
 
-
-// Hook for fetching changes list
-export function useChanges() {
-  return useSWR('changes', () => fetchChanges(), {
+// Hook for fetching changes list (suspense mode - always returns data)
+export function useChanges(): Change[] {
+  const { data } = useSWR('changes', () => fetchChanges(), {
+    suspense: true,
     refreshInterval: 3000,
     revalidateOnFocus: false,
   });
+  return data!;
 }
 
-// Hook for fetching diff for a specific change
-export function useDiff(changeId: string | null, commitId?: string, baseCommitId?: string) {
-  const key = changeId
-    ? ['diff', changeId, commitId ?? 'latest', baseCommitId ?? 'parent']
-    : null;
+// Hook to check if changes are revalidating (for loading indicator)
+export function useChangesIsValidating(): boolean {
+  const { isValidating } = useSWR('changes', () => fetchChanges(), {
+    refreshInterval: 3000,
+    revalidateOnFocus: false,
+  });
+  return isValidating;
+}
 
-  return useSWR<DiffResponse>(
+// Hook for fetching diff (suspense mode - requires changeId)
+export function useDiff(changeId: string, commitId?: string, baseCommitId?: string): DiffResponse {
+  const key = ['diff', changeId, commitId ?? 'latest', baseCommitId ?? 'parent'];
+
+  const { data } = useSWR<DiffResponse>(
     key,
-    () => fetchDiff(changeId!, commitId, baseCommitId),
+    () => fetchDiff(changeId, commitId, baseCommitId),
     {
+      suspense: true,
       revalidateOnFocus: false,
+      // No keepPreviousData - Suspense + useTransition handles showing old UI
+      // and ensures atomic update when all data is ready
     }
   );
+  return data!;
 }
 
-// Hook for fetching review for a specific change
-export function useReview(changeId: string | null) {
-  const key = changeId ? ['review', changeId] : null;
+// Hook for fetching review (suspense mode - requires changeId)
+export function useReview(changeId: string): Review {
+  const key = ['review', changeId];
 
-  const result = useSWR<Review | null>(
+  const { data } = useSWR<Review>(
     key,
     async () => {
-      const review = await fetchReview(changeId!);
+      const review = await fetchReview(changeId);
       // Auto-create review if it doesn't exist
       if (!review) {
-        return createReview(changeId!);
+        return createReview(changeId);
       }
       return review;
     },
     {
+      suspense: true,
       refreshInterval: 3000,
       revalidateOnFocus: false,
+      // No keepPreviousData - Suspense + useTransition handles showing old UI
     }
   );
-
-  return result;
+  return data!;
 }
 
 // Mutation helpers that update the cache

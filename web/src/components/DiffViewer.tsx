@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, forwardRef, useImperativeHandle } from 'react';
 import { VList, VListHandle } from 'virtua';
 import { Thread, Diff, Review, addComment, DiffChunk } from '../api';
-import { useAppStore } from '../store';
+import { useAppContext } from '../context';
 import { replyToThread, resolveThread, reopenThread } from '../hooks';
 import { RevisionLabel } from './CommentPanel';
 import { mutate } from 'swr';
@@ -14,7 +14,7 @@ interface DiffViewerProps {
   diff: Diff;
   targetMessage?: string;
   messageDiff?: DiffChunk[];
-  review: Review | null;
+  review: Review;
   changeId: string;
   description?: string; // Current change description
 }
@@ -213,23 +213,25 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   { diff, targetMessage, messageDiff, review, changeId, description },
   ref
 ) {
-  // Get UI state from store
-  const selectedRevision = useAppStore((s) => s.selectedRevision);
-  const comparisonBase = useAppStore((s) => s.comparisonBase);
-  const focused = useAppStore((s) => s.focusedPanel === 'diff');
-  const selectedThreadId = useAppStore((s) => s.selectedThreadId);
-  const replyingToThread = useAppStore((s) => s.replyingToThread);
-  const replyText = useAppStore((s) => s.replyText);
-  const submittingReply = useAppStore((s) => s.submittingReply);
-  const commentText = useAppStore((s) => s.newCommentText);
-
-  const setCommentText = useAppStore((s) => s.setNewCommentText);
-  const clearNewComment = useAppStore((s) => s.clearNewComment);
-  const setComparisonBase = useAppStore((s) => s.setComparisonBase);
-  const startReply = useAppStore((s) => s.startReply);
-  const cancelReply = useAppStore((s) => s.cancelReply);
-  const setReplyText = useAppStore((s) => s.setReplyText);
-  const setSubmittingReply = useAppStore((s) => s.setSubmittingReply);
+  // Get UI state from context
+  const {
+    selectedRevision,
+    comparisonBase,
+    focusedPanel,
+    selectedThreadId,
+    replyingToThread,
+    replyText,
+    submittingReply,
+    newCommentText: commentText,
+    setNewCommentText: setCommentText,
+    clearNewComment,
+    setComparisonBase,
+    startReply,
+    cancelReply,
+    setReplyText,
+    setSubmittingReply,
+  } = useAppContext();
+  const focused = focusedPanel === 'diff';
 
   // Local state
   const [focusedIndex, setFocusedIndex] = useState(0);
@@ -295,7 +297,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
 
   // Build rows with threads, selectedLines derivation, and editor insertion
   const { rows, selectedLines } = useMemo(() => {
-    const threads = review?.threads || [];
+    const threads = review.threads;
 
     // Separate commit message threads from file threads
     const commitThreads = threads.filter((t) => t.file === COMMIT_MESSAGE_FILE);
@@ -363,7 +365,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
     }
 
     return { rows, selectedLines };
-  }, [baseRows, commitRows, review?.threads, editorOpen, focusedIndex]);
+  }, [baseRows, commitRows, review.threads, editorOpen, focusedIndex]);
 
   // Build map of threadId -> row index for scrolling
   const threadRowIndices = useMemo(() => {
@@ -439,11 +441,10 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
 
   const handleLineClick = useCallback(
     (rowIndex: number) => {
-      if (!review) return;
       setFocusedIndex(rowIndex);
       setEditorOpen(true);
     },
-    [review]
+    []
   );
 
   const handleExpandSection = useCallback((id: string) => {
@@ -492,7 +493,6 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   }, [replyText, changeId, setReplyText, cancelReply, setSubmittingReply]);
 
   const handleToggleThreadStatus = useCallback(async (threadId: string) => {
-    if (!changeId || !review) return;
     const thread = review.threads.find((t) => t.id === threadId);
     if (!thread) return;
 
@@ -505,7 +505,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
     } catch (e) {
       console.error('Failed to toggle thread status:', e);
     }
-  }, [changeId, review]);
+  }, [changeId, review.threads]);
 
   // Keyboard navigation
   useEffect(() => {
@@ -551,7 +551,6 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
             break;
           }
           // Create new comment - works on code lines and commit lines
-          if (!review) return;
           if (row.type === 'line' && row.line.newLineNum !== undefined) {
             e.preventDefault();
             setEditorOpen(true);
@@ -689,7 +688,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
                 setEditorOpen(true);
               }
             }}
-            className={`flex border-l-2 ${getBgClass()} border-transparent ${review && !isFocusedLine ? 'cursor-pointer hover:bg-amber-100' : ''}`}
+            className={`flex border-l-2 ${getBgClass()} border-transparent ${!isFocusedLine ? 'cursor-pointer hover:bg-amber-100' : ''}`}
           >
             <span className="w-12 text-right pr-2 select-none shrink-0 text-amber-400">
               {row.lineNum}
@@ -914,7 +913,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
       const isFocusedLine = idx === focusedIndex;
       const isEditing = isFocusedLine && editorOpen;
       // Only allow clicking on lines with newLineNum (not pure deletions)
-      const canClick = review && line.newLineNum !== undefined && line.newLineNum > 0;
+      const canClick = line.newLineNum !== undefined && line.newLineNum > 0;
 
       return (
         <div
@@ -990,7 +989,7 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
   }
 
   // Determine what we're showing
-  const latestRevision = review?.revisions[review.revisions.length - 1];
+  const latestRevision = review.revisions[review.revisions.length - 1];
   const showingRevision = selectedRevision ?? latestRevision;
   const isComparingRevisions = comparisonBase !== null;
 
@@ -1031,9 +1030,18 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
       </VList>
 
       {/* Key bindings hint */}
-      <div className="fixed bottom-4 left-4 text-xs text-gray-400 z-20">
-        Tab: switch panel | j/k: navigate | ctrl-d/u: page | c: comment | r: reply | x: resolve |
-        g/G: top/bottom
+      <div className="fixed bottom-0 left-0 right-0 bg-gray-800/90 text-gray-300 text-xs px-4 py-2 z-20 backdrop-blur-sm">
+        <span className="text-gray-400">Tab</span> switch panel
+        <span className="mx-2 text-gray-600">|</span>
+        <span className="text-gray-400">j/k</span> navigate
+        <span className="mx-2 text-gray-600">|</span>
+        <span className="text-gray-400">c</span> comment
+        <span className="mx-2 text-gray-600">|</span>
+        <span className="text-gray-400">r</span> reply
+        <span className="mx-2 text-gray-600">|</span>
+        <span className="text-gray-400">x</span> resolve
+        <span className="mx-2 text-gray-600">|</span>
+        <span className="text-gray-400">g/G</span> top/bottom
       </div>
     </div>
   );

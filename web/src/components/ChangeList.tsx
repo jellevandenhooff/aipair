@@ -1,6 +1,6 @@
 import { useRef, useEffect, forwardRef } from 'react';
-import { useAppStore } from '../store';
-import type { Change } from '../api';
+import { useAppContext } from '../context';
+import { useChanges, type Change } from '../hooks';
 
 interface ChangeItemProps {
   change: Change;
@@ -64,15 +64,12 @@ const ChangeItem = forwardRef<HTMLButtonElement, ChangeItemProps>(function Chang
   );
 });
 
-interface ChangeListProps {
-  changes: Change[];
-  selectedChangeId: string | null;
-  onSelectChange: (changeId: string) => void;
-  loading: boolean;
-}
+export function ChangeList() {
+  // Fetch changes - suspends until ready
+  const changes = useChanges();
 
-export function ChangeList({ changes, selectedChangeId, onSelectChange, loading }: ChangeListProps) {
-  const focused = useAppStore((s) => s.focusedPanel === 'changes');
+  const { focusedPanel, selectedChangeId, selectChange } = useAppContext();
+  const focused = focusedPanel === 'changes';
 
   const changeRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
 
@@ -83,10 +80,6 @@ export function ChangeList({ changes, selectedChangeId, onSelectChange, loading 
       el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
   }, [selectedChangeId, focused]);
-
-  if (loading && changes.length === 0) {
-    return <div className="p-3 text-gray-400 text-sm">Loading changes...</div>;
-  }
 
   if (changes.length === 0) {
     return <div className="p-3 text-gray-400 text-sm">No changes found</div>;
@@ -112,7 +105,7 @@ export function ChangeList({ changes, selectedChangeId, onSelectChange, loading 
             isSelected={isSelected}
             focused={focused}
             isMain={isMain}
-            onClick={() => onSelectChange(change.change_id)}
+            onClick={() => selectChange(change.change_id)}
           />
         );
       })}
