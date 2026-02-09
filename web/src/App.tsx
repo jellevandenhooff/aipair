@@ -7,7 +7,7 @@ import { useChanges } from './hooks';
 
 // Inner component that needs changes data to find selected change
 function MainContent() {
-  const changes = useChanges();
+  const { changes } = useChanges();
   const {
     selectedChangeId,
     selectChange,

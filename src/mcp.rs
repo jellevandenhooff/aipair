@@ -35,8 +35,14 @@ pub struct RecordRevisionRequest {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetPendingFeedbackRequest {
+    #[schemars(description = "Optional topic slug to filter feedback to only changes in that topic")]
+    pub topic: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct CreateTopicRequest {
-    #[schemars(description = "Human-readable name for the topic, e.g. 'Fix auth flow'")]
+    #[schemars(description = "Short slug for the topic, max ~20 chars (e.g. 'fix-auth', 'dag-viz')")]
     pub name: String,
     #[schemars(description = "Optional freeform markdown plan/notes")]
     pub notes: Option<String>,
@@ -150,13 +156,29 @@ impl ReviewService {
         ))]))
     }
 
-    #[tool(description = "Get pending review feedback for your changes")]
-    async fn get_pending_feedback(&self) -> Result<CallToolResult, McpError> {
+    #[tool(description = "Get pending review feedback for your changes. Optionally filter by topic.")]
+    async fn get_pending_feedback(
+        &self,
+        params: Parameters<GetPendingFeedbackRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let req = &params.0;
         let jj = Jj::discover().map_err(|e| mcp_error(e.to_string()))?;
         let store = ReviewStore::new(jj.repo_path());
 
+        // If topic filter specified, get the set of change IDs in that topic
+        let topic_changes = if let Some(ref topic_id) = req.topic {
+            let topic_store = TopicStore::new(jj.repo_path());
+            let topic = topic_store
+                .get(topic_id)
+                .map_err(|e| mcp_error(e.to_string()))?
+                .ok_or_else(|| mcp_error(format!("Topic '{}' not found", topic_id)))?;
+            Some(topic.changes)
+        } else {
+            None
+        };
+
         let reviews = store
-            .list_with_open_threads()
+            .list_with_open_threads(topic_changes.as_ref())
             .map_err(|e| mcp_error(e.to_string()))?;
 
         if reviews.is_empty() {
@@ -298,11 +320,23 @@ impl ReviewService {
         if id.is_empty() {
             return Err(mcp_error("Topic name must contain alphanumeric characters"));
         }
+        if id != req.name {
+            return Err(mcp_error(format!(
+                "Topic name must be a valid slug (lowercase, alphanumeric, hyphens). Got '{}', expected '{}'",
+                req.name, id
+            )));
+        }
+        if id.len() > 20 {
+            return Err(mcp_error(format!(
+                "Topic name too long ({} chars, max 20). Try a shorter slug.",
+                id.len()
+            )));
+        }
 
         // Get current change as the base
         let base_change = jj.get_change("@").map_err(|e| mcp_error(e.to_string()))?;
 
-        // Create the topic
+        // Create the topic — slug is the name
         topic_store
             .create(&id, &req.name, &base_change.change_id)
             .map_err(|e| mcp_error(e.to_string()))?;
@@ -408,8 +442,8 @@ impl ReviewService {
             };
 
             output.push_str(&format!(
-                "## {}{} — {} change(s)\n",
-                topic.name, status_str, topic.changes.len()
+                "## {} (id: {}){} — {} change(s)\n",
+                topic.name, topic.id, status_str, topic.changes.len()
             ));
 
             // Sort topic's changes in topological order (by position in the DAG log)
@@ -440,10 +474,14 @@ impl ReviewService {
                     String::new()
                 };
 
-                let desc = if change.description.is_empty() {
-                    "(no description)"
+                let first_line = change.description.lines().next().unwrap_or("");
+                let truncated = change.description.contains('\n');
+                let desc = if first_line.is_empty() {
+                    "(no description)".to_string()
+                } else if truncated {
+                    format!("{} [...]", first_line)
                 } else {
-                    &change.description
+                    first_line.to_string()
                 };
 
                 output.push_str(&format!(

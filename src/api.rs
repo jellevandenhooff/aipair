@@ -7,6 +7,7 @@ use axum::{
 };
 #[cfg(feature = "bundled-frontend")]
 use axum::http::header;
+use renderdag::{Ancestor, GraphRow, GraphRowRenderer, Renderer};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
@@ -132,10 +133,39 @@ struct ChangeWithStatus {
     topic_id: Option<String>,
 }
 
+/// Serializable graph row for the DAG visualization.
+/// We re-serialize from renderdag's GraphRow to control the JSON format
+/// (especially LinkLine which bitflags serializes as strings, not numbers).
+#[derive(Serialize)]
+struct DagRow {
+    node: String,
+    glyph: String,
+    merge: bool,
+    node_line: Vec<renderdag::NodeLine>,
+    link_line: Option<Vec<u16>>,
+    term_line: Option<Vec<bool>>,
+    pad_lines: Vec<renderdag::PadLine>,
+}
+
+impl DagRow {
+    fn from_graph_row(row: GraphRow<String>) -> Self {
+        DagRow {
+            node: row.node,
+            glyph: row.glyph,
+            merge: row.merge,
+            node_line: row.node_line,
+            link_line: row.link_line.map(|v| v.into_iter().map(|l| l.bits()).collect()),
+            term_line: row.term_line,
+            pad_lines: row.pad_lines,
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct ChangesResponse {
     changes: Vec<ChangeWithStatus>,
     main_change_id: Option<String>,
+    graph: Vec<DagRow>,
 }
 
 async fn list_changes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -168,6 +198,27 @@ async fn list_changes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let main_idx = main_change_id
         .as_ref()
         .and_then(|main_id| changes.iter().position(|c| &c.change_id == main_id));
+
+    // Compute DAG graph layout using sapling-renderdag.
+    // Changes come from jj log in topological order (newest first).
+    let change_ids: std::collections::HashSet<&str> = changes
+        .iter()
+        .map(|c| c.change_id.as_str())
+        .collect();
+
+    let mut renderer = GraphRowRenderer::new();
+    let mut graph: Vec<DagRow> = Vec::new();
+    for change in &changes {
+        let parents: Vec<Ancestor<String>> = change
+            .parent_change_ids
+            .iter()
+            .filter(|p| change_ids.contains(p.as_str()))
+            .map(|p| Ancestor::Parent(p.clone()))
+            .collect();
+        let glyph = if change.empty { "o" } else { "@" };
+        let row = renderer.next_row(change.change_id.clone(), parents, glyph.to_string(), String::new());
+        graph.push(DagRow::from_graph_row(row));
+    }
 
     let changes_with_status: Vec<ChangeWithStatus> = changes
         .into_iter()
@@ -213,6 +264,7 @@ async fn list_changes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     Json(ChangesResponse {
         changes: changes_with_status,
         main_change_id,
+        graph,
     })
     .into_response()
 }

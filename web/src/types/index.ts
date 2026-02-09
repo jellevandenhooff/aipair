@@ -24,6 +24,20 @@ export interface Change extends BaseChange {
   topic_id?: string;
 }
 
+// DAG graph types (from sapling-renderdag via API)
+export type NodeLine = 'Blank' | 'Ancestor' | 'Parent' | 'Node';
+export type PadLine = 'Blank' | 'Ancestor' | 'Parent';
+
+export interface GraphRow {
+  node: string;       // change_id
+  glyph: string;
+  merge: boolean;
+  node_line: NodeLine[];
+  link_line: number[] | null;  // LinkLine bits as u16
+  term_line: boolean[] | null;
+  pad_lines: PadLine[];
+}
+
 // API response types for topics
 export interface TopicChangeInfo {
   change_id: string;

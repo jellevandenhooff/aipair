@@ -1,16 +1,21 @@
 // Import types from generated types
-import type { Change, Diff, Review, TopicsResponse } from './types';
+import type { Change, Diff, Review, TopicsResponse, GraphRow } from './types';
 
 // Re-export types for consumers
-export type { Change, Diff, FileDiff, Review, Thread, Comment, Author, ThreadStatus, Topic, TopicsResponse } from './types';
+export type { Change, Diff, FileDiff, Review, Thread, Comment, Author, ThreadStatus, Topic, TopicsResponse, GraphRow, NodeLine, PadLine } from './types';
 
 const API_BASE = '/api';
 
-export async function fetchChanges(): Promise<Change[]> {
+export interface ChangesData {
+  changes: Change[];
+  graph: GraphRow[];
+}
+
+export async function fetchChanges(): Promise<ChangesData> {
   const res = await fetch(`${API_BASE}/changes`);
   if (!res.ok) throw new Error(`Failed to fetch changes: ${res.statusText}`);
   const data = await res.json();
-  return data.changes;
+  return { changes: data.changes, graph: data.graph };
 }
 
 export interface DiffChunk {

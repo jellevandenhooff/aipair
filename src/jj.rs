@@ -13,6 +13,9 @@ pub struct Change {
     pub author: String,
     pub timestamp: String,
     pub empty: bool,
+    pub conflict: bool,
+    pub is_working_copy: bool,
+    pub parent_change_ids: Vec<String>,
 }
 
 /// Internal struct for deserializing jj's JSON output
@@ -102,7 +105,7 @@ impl Jj {
                 "-r",
                 &format!("ancestors(visible_heads(), {limit})"),
                 "-T",
-                r#"json(self) ++ "\t" ++ empty ++ "\n""#,
+                r#"json(self) ++ "\t" ++ empty ++ "\t" ++ conflict ++ "\t" ++ self.current_working_copy() ++ "\t" ++ parents.map(|c| c.change_id()).join(",") ++ "\n""#,
             ])
             .output()
             .context("Failed to run jj log")?;
@@ -119,12 +122,16 @@ impl Jj {
                 continue;
             }
 
-            // Parse "json\tempty" format
-            // TODO: jj's json(self) doesn't include `empty`, so we append it separately.
-            // Would be cleaner if jj supported including it in the JSON output.
-            let Some((json_str, empty_str)) = line.rsplit_once('\t') else {
+            // Parse "json\tempty\tconflict\tis_wc\tparents" format
+            let parts: Vec<&str> = line.rsplitn(5, '\t').collect();
+            if parts.len() < 5 {
                 continue;
-            };
+            }
+            let parents_str = parts[0];
+            let is_wc_str = parts[1];
+            let conflict_str = parts[2];
+            let empty_str = parts[3];
+            let json_str = parts[4];
 
             let jj_change: JjChange = serde_json::from_str(json_str)
                 .with_context(|| format!("Failed to parse jj log output: {json_str}"))?;
@@ -134,6 +141,12 @@ impl Jj {
                 continue;
             }
 
+            let parent_change_ids: Vec<String> = if parents_str.is_empty() {
+                Vec::new()
+            } else {
+                parents_str.split(',').map(|s| s.to_string()).collect()
+            };
+
             changes.push(Change {
                 change_id: jj_change.change_id,
                 commit_id: jj_change.commit_id,
@@ -141,6 +154,9 @@ impl Jj {
                 author: jj_change.author.email,
                 timestamp: jj_change.committer.timestamp,
                 empty: empty_str == "true",
+                conflict: conflict_str == "true",
+                is_working_copy: is_wc_str == "true",
+                parent_change_ids,
             });
         }
 
@@ -293,7 +309,7 @@ impl Jj {
                 "-r",
                 change_id,
                 "-T",
-                r#"json(self) ++ "\t" ++ empty ++ "\n""#,
+                r#"json(self) ++ "\t" ++ empty ++ "\t" ++ conflict ++ "\t" ++ self.current_working_copy() ++ "\t" ++ parents.map(|c| c.change_id()).join(",") ++ "\n""#,
             ])
             .output()
             .context("Failed to run jj log")?;
@@ -307,12 +323,24 @@ impl Jj {
 
         let stdout = String::from_utf8(output.stdout)?;
         let line = stdout.lines().next().context("No output from jj log")?;
-        let (json_str, empty_str) = line
-            .rsplit_once('\t')
-            .context("Invalid jj log output format")?;
+        let parts: Vec<&str> = line.rsplitn(5, '\t').collect();
+        if parts.len() < 5 {
+            anyhow::bail!("Invalid jj log output format");
+        }
+        let parents_str = parts[0];
+        let is_wc_str = parts[1];
+        let conflict_str = parts[2];
+        let empty_str = parts[3];
+        let json_str = parts[4];
 
         let jj_change: JjChange = serde_json::from_str(json_str)
             .with_context(|| format!("Failed to parse jj log output: {json_str}"))?;
+
+        let parent_change_ids: Vec<String> = if parents_str.is_empty() {
+            Vec::new()
+        } else {
+            parents_str.split(',').map(|s| s.to_string()).collect()
+        };
 
         Ok(Change {
             change_id: jj_change.change_id,
@@ -321,6 +349,9 @@ impl Jj {
             author: jj_change.author.email,
             timestamp: jj_change.committer.timestamp,
             empty: empty_str == "true",
+            conflict: conflict_str == "true",
+            is_working_copy: is_wc_str == "true",
+            parent_change_ids,
         })
     }
 

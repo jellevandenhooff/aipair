@@ -28,6 +28,9 @@ serde_json = "1"
 # Diff
 similar = "2"
 
+# DAG rendering
+sapling-renderdag = { version = "0.1.0", features = ["serialize"] }
+
 # Static file embedding (release builds only)
 rust-embed = "8"
 mime_guess = "2"

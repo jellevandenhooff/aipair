@@ -10,13 +10,14 @@ import {
   reopenThread as apiReopenThread,
   mergeChange as apiMergeChange,
   type Change,
+  type ChangesData,
   type DiffResponse,
   type Review,
   type TopicsResponse,
 } from './api';
 
-// Hook for fetching changes list (suspense mode - always returns data)
-export function useChanges(): Change[] {
+// Hook for fetching changes list with DAG graph (suspense mode - always returns data)
+export function useChanges(): ChangesData {
   const { data } = useSWR('changes', () => fetchChanges(), {
     suspense: true,
     refreshInterval: 3000,
@@ -115,4 +116,4 @@ export async function mergeChange(changeId: string, force = false) {
 }
 
 // Re-export types for convenience
-export type { Change, DiffResponse, Review, TopicsResponse };
+export type { Change, ChangesData, DiffResponse, Review, TopicsResponse };

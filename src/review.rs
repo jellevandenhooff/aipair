@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use ts_rs::TS;
 use uuid::Uuid;
@@ -219,11 +220,20 @@ impl ReviewStore {
         Ok(reviews)
     }
 
-    pub fn list_with_open_threads(&self) -> Result<Vec<Review>> {
+    /// List reviews that have open threads.
+    /// If `change_ids` is Some, only include reviews for those changes.
+    pub fn list_with_open_threads(&self, change_ids: Option<&HashSet<String>>) -> Result<Vec<Review>> {
         let reviews = self.list()?;
         Ok(reviews
             .into_iter()
-            .filter(|r| r.threads.iter().any(|t| t.status == ThreadStatus::Open))
+            .filter(|r| {
+                if let Some(ids) = change_ids {
+                    if !ids.contains(&r.change_id) {
+                        return false;
+                    }
+                }
+                r.threads.iter().any(|t| t.status == ThreadStatus::Open)
+            })
             .collect())
     }
 
