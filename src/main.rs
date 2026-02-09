@@ -3,6 +3,7 @@ mod jj;
 mod line_mapper;
 mod mcp;
 mod review;
+mod topic;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

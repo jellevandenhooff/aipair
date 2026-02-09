@@ -11,6 +11,7 @@ use std::borrow::Cow;
 
 use crate::jj::Jj;
 use crate::review::{Author, ReviewStore, ThreadStatus};
+use crate::topic::{slugify, TopicStore};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct RespondRequest {
@@ -31,6 +32,35 @@ pub struct RecordRevisionRequest {
     pub change_id: String,
     #[schemars(description = "Brief summary of what was addressed in this revision")]
     pub description: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CreateTopicRequest {
+    #[schemars(description = "Human-readable name for the topic, e.g. 'Fix auth flow'")]
+    pub name: String,
+    #[schemars(description = "Optional freeform markdown plan/notes")]
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct UpdateTopicRequest {
+    #[schemars(description = "The topic ID (slug) to update")]
+    pub topic_id: String,
+    #[schemars(description = "Change IDs to add to this topic")]
+    pub add_changes: Option<Vec<String>>,
+    #[schemars(description = "Change IDs to remove from this topic")]
+    pub remove_changes: Option<Vec<String>>,
+    #[schemars(description = "Overwrite the topic's notes.md with this content")]
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct FinishTopicRequest {
+    #[schemars(description = "The topic ID (slug) to finish")]
+    pub topic_id: String,
+    #[schemars(description = "Force finish even with open review threads")]
+    #[serde(default)]
+    pub force: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -253,6 +283,287 @@ impl ReviewService {
 
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
+
+    #[tool(description = "Create a new topic (named scope for a stack of changes). Creates the topic and sets it as the active topic. Add changes to it with update_topic.")]
+    async fn create_topic(
+        &self,
+        params: Parameters<CreateTopicRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let req = &params.0;
+        let jj = Jj::discover().map_err(|e| mcp_error(e.to_string()))?;
+        let topic_store = TopicStore::new(jj.repo_path());
+        topic_store.init().map_err(|e| mcp_error(e.to_string()))?;
+
+        let id = slugify(&req.name);
+        if id.is_empty() {
+            return Err(mcp_error("Topic name must contain alphanumeric characters"));
+        }
+
+        // Get current change as the base
+        let base_change = jj.get_change("@").map_err(|e| mcp_error(e.to_string()))?;
+
+        // Create the topic
+        topic_store
+            .create(&id, &req.name, &base_change.change_id)
+            .map_err(|e| mcp_error(e.to_string()))?;
+
+        // Set notes if provided
+        if let Some(ref notes) = req.notes {
+            topic_store
+                .set_notes(&id, notes)
+                .map_err(|e| mcp_error(e.to_string()))?;
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Created topic '{}' (id: {}). Base: {}. Use update_topic to add changes.",
+            req.name,
+            id,
+            &base_change.change_id[..8.min(base_change.change_id.len())]
+        ))]))
+    }
+
+    #[tool(description = "Update a topic's change list or notes. Use this to keep the topic in sync after creating/squashing/splitting changes. Change IDs can be short prefixes.")]
+    async fn update_topic(
+        &self,
+        params: Parameters<UpdateTopicRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let req = &params.0;
+        let jj = Jj::discover().map_err(|e| mcp_error(e.to_string()))?;
+        let topic_store = TopicStore::new(jj.repo_path());
+
+        // Verify topic exists first
+        topic_store
+            .get(&req.topic_id)
+            .map_err(|e| mcp_error(e.to_string()))?
+            .ok_or_else(|| mcp_error(format!("Topic not found: {}", req.topic_id)))?;
+
+        let mut updates = Vec::new();
+
+        if let Some(ref add) = req.add_changes {
+            // Resolve short IDs and validate each change exists in jj
+            let mut resolved = Vec::new();
+            for id in add {
+                let change = jj
+                    .get_change(id)
+                    .map_err(|_| mcp_error(format!("Change not found: {}", id)))?;
+                resolved.push(change.change_id);
+            }
+            topic_store
+                .add_changes(&req.topic_id, &resolved)
+                .map_err(|e| mcp_error(e.to_string()))?;
+            updates.push(format!("added {} change(s)", resolved.len()));
+        }
+
+        if let Some(ref remove) = req.remove_changes {
+            // remove_changes handles prefix matching against stored IDs
+            topic_store
+                .remove_changes(&req.topic_id, remove)
+                .map_err(|e| mcp_error(e.to_string()))?;
+            updates.push(format!("removed {} change(s)", remove.len()));
+        }
+
+        if let Some(ref notes) = req.notes {
+            topic_store
+                .set_notes(&req.topic_id, notes)
+                .map_err(|e| mcp_error(e.to_string()))?;
+            updates.push("updated notes".to_string());
+        }
+
+        let topic = topic_store
+            .get(&req.topic_id)
+            .map_err(|e| mcp_error(e.to_string()))?
+            .ok_or_else(|| mcp_error(format!("Topic not found: {}", req.topic_id)))?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Updated topic '{}': {}. Total changes: {}.",
+            topic.name,
+            if updates.is_empty() { "no changes".to_string() } else { updates.join(", ") },
+            topic.changes.len()
+        ))]))
+    }
+
+    #[tool(description = "List all topics with their changes, status, and review info. Shows changes in topological order from the jj DAG.")]
+    async fn get_topics(&self) -> Result<CallToolResult, McpError> {
+        let jj = Jj::discover().map_err(|e| mcp_error(e.to_string()))?;
+        let topic_store = TopicStore::new(jj.repo_path());
+        let review_store = ReviewStore::new(jj.repo_path());
+
+        let topics = topic_store.list().map_err(|e| mcp_error(e.to_string()))?;
+
+        if topics.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No topics found.",
+            )]));
+        }
+
+        // Get all changes for ordering
+        let all_changes = jj.log(200).map_err(|e| mcp_error(e.to_string()))?;
+
+        let mut output = String::new();
+
+        for topic in &topics {
+            let status_str = match topic.status {
+                crate::topic::TopicStatus::Active => "",
+                crate::topic::TopicStatus::Finished => " (finished)",
+            };
+
+            output.push_str(&format!(
+                "## {}{} — {} change(s)\n",
+                topic.name, status_str, topic.changes.len()
+            ));
+
+            // Sort topic's changes in topological order (by position in the DAG log)
+            let mut ordered_changes: Vec<_> = all_changes
+                .iter()
+                .filter(|c| topic.changes.contains(&c.change_id))
+                .collect();
+            // jj log returns newest first; reverse to show base-to-tip
+            ordered_changes.reverse();
+
+            for change in &ordered_changes {
+                // Get open thread count from review
+                let open_threads = review_store
+                    .get(&change.change_id)
+                    .ok()
+                    .flatten()
+                    .map(|r| {
+                        r.threads
+                            .iter()
+                            .filter(|t| t.status == ThreadStatus::Open)
+                            .count()
+                    })
+                    .unwrap_or(0);
+
+                let thread_info = if open_threads > 0 {
+                    format!("  ({} open)", open_threads)
+                } else {
+                    String::new()
+                };
+
+                let desc = if change.description.is_empty() {
+                    "(no description)"
+                } else {
+                    &change.description
+                };
+
+                output.push_str(&format!(
+                    "  {}  {}{}\n",
+                    &change.change_id[..8.min(change.change_id.len())],
+                    desc,
+                    thread_info
+                ));
+            }
+
+            // Show notes if present
+            {
+                let notes = topic_store
+                    .get_notes(&topic.id)
+                    .map_err(|e| mcp_error(e.to_string()))?;
+                if !notes.is_empty() {
+                    output.push_str(&format!("\n### Notes\n{}\n", notes));
+                }
+            }
+
+            output.push('\n');
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(description = "Finish a topic: validate the stack and move main bookmark to the tip. All changes must have descriptions and (unless force=true) no open review threads.")]
+    async fn finish_topic(
+        &self,
+        params: Parameters<FinishTopicRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let req = &params.0;
+        let jj = Jj::discover().map_err(|e| mcp_error(e.to_string()))?;
+        let topic_store = TopicStore::new(jj.repo_path());
+        let review_store = ReviewStore::new(jj.repo_path());
+
+        let topic = topic_store
+            .get(&req.topic_id)
+            .map_err(|e| mcp_error(e.to_string()))?
+            .ok_or_else(|| mcp_error(format!("Topic not found: {}", req.topic_id)))?;
+
+        if topic.changes.is_empty() {
+            return Err(mcp_error("Topic has no changes"));
+        }
+
+        // Get all changes for ordering
+        let all_changes = jj.log(200).map_err(|e| mcp_error(e.to_string()))?;
+
+        // Find topic's changes in topological order
+        let ordered_changes: Vec<_> = all_changes
+            .iter()
+            .filter(|c| topic.changes.contains(&c.change_id))
+            .collect();
+
+        if ordered_changes.len() != topic.changes.len() {
+            let found: std::collections::HashSet<_> =
+                ordered_changes.iter().map(|c| &c.change_id).collect();
+            let missing: Vec<_> = topic
+                .changes
+                .iter()
+                .filter(|id| !found.contains(id))
+                .collect();
+            return Err(mcp_error(format!(
+                "Some changes not found in jj log: {:?}",
+                missing
+            )));
+        }
+
+        // Validate: all changes must have descriptions
+        let empty_desc: Vec<_> = ordered_changes
+            .iter()
+            .filter(|c| c.description.trim().is_empty())
+            .map(|c| c.change_id[..8.min(c.change_id.len())].to_string())
+            .collect();
+        if !empty_desc.is_empty() {
+            return Err(mcp_error(format!(
+                "Changes with empty descriptions: {}",
+                empty_desc.join(", ")
+            )));
+        }
+
+        // Validate: no open review threads (unless force)
+        if !req.force {
+            let mut total_open = 0;
+            for change in &ordered_changes {
+                if let Ok(Some(review)) = review_store.get(&change.change_id) {
+                    total_open += review
+                        .threads
+                        .iter()
+                        .filter(|t| t.status == ThreadStatus::Open)
+                        .count();
+                }
+            }
+            if total_open > 0 {
+                return Err(mcp_error(format!(
+                    "Topic has {} open review thread(s). Use force=true to override.",
+                    total_open
+                )));
+            }
+        }
+
+        // The tip is the first in ordered_changes (newest first from jj log)
+        let tip = &ordered_changes[0];
+
+        // Move main bookmark to tip
+        jj.move_bookmark("main", &tip.change_id)
+            .map_err(|e| mcp_error(e.to_string()))?;
+
+        // Mark topic as finished
+        topic_store
+            .finish(&req.topic_id)
+            .map_err(|e| mcp_error(e.to_string()))?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Finished topic '{}'. main bookmark moved to {}. {} change(s) merged.",
+            topic.name,
+            &tip.change_id[..8.min(tip.change_id.len())],
+            ordered_changes.len()
+        ))]))
+    }
 }
 
 #[tool_handler]
@@ -263,7 +574,17 @@ impl ServerHandler for ReviewService {
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             server_info: Implementation::from_build_env(),
             instructions: Some(
-                "Code review feedback service. Use get_pending_feedback to check for review comments on your changes.".to_string(),
+                "Code review and topic management service.\n\n\
+                 ## Topics\n\
+                 Use get_topics to see active work. When working on a topic:\n\
+                 - After creating a new jj change, call update_topic to add it\n\
+                 - After squashing/splitting changes, call update_topic to sync the change list\n\
+                 - Keep change descriptions meaningful — update them as content evolves\n\
+                 - Default to creating new changes (squashing is easy, splitting is hard)\n\
+                 - Stay in the current change for small follow-ups\n\n\
+                 ## Reviews\n\
+                 Use get_pending_feedback to check for review comments on your changes."
+                    .to_string(),
             ),
         }
     }

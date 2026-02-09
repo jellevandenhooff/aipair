@@ -3,6 +3,7 @@ import {
   fetchChanges,
   fetchDiff,
   fetchReview,
+  fetchTopics,
   createReview,
   replyToThread as apiReplyToThread,
   resolveThread as apiResolveThread,
@@ -11,6 +12,7 @@ import {
   type Change,
   type DiffResponse,
   type Review,
+  type TopicsResponse,
 } from './api';
 
 // Hook for fetching changes list (suspense mode - always returns data)
@@ -30,6 +32,16 @@ export function useChangesIsValidating(): boolean {
     revalidateOnFocus: false,
   });
   return isValidating;
+}
+
+// Hook for fetching topics (suspense mode)
+export function useTopics(): TopicsResponse {
+  const { data } = useSWR('topics', () => fetchTopics(), {
+    suspense: true,
+    refreshInterval: 3000,
+    revalidateOnFocus: false,
+  });
+  return data!;
 }
 
 // Hook for fetching diff (suspense mode - requires changeId)
@@ -102,5 +114,5 @@ export async function mergeChange(changeId: string, force = false) {
   return result;
 }
 
-// Re-export Change type for convenience
-export type { Change, DiffResponse, Review };
+// Re-export types for convenience
+export type { Change, DiffResponse, Review, TopicsResponse };

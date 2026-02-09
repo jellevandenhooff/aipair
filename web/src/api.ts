@@ -1,8 +1,8 @@
 // Import types from generated types
-import type { Change, Diff, Review } from './types';
+import type { Change, Diff, Review, TopicsResponse } from './types';
 
 // Re-export types for consumers
-export type { Change, Diff, FileDiff, Review, Thread, Comment, Author, ThreadStatus } from './types';
+export type { Change, Diff, FileDiff, Review, Thread, Comment, Author, ThreadStatus, Topic, TopicsResponse } from './types';
 
 const API_BASE = '/api';
 
@@ -130,6 +130,27 @@ export async function mergeChange(changeId: string, force = false): Promise<Merg
   const data = await res.json();
   if (!res.ok && !data.message) {
     throw new Error(`Failed to merge: ${res.statusText}`);
+  }
+  return data;
+}
+
+// Topic API functions
+
+export async function fetchTopics(): Promise<TopicsResponse> {
+  const res = await fetch(`${API_BASE}/topics`);
+  if (!res.ok) throw new Error(`Failed to fetch topics: ${res.statusText}`);
+  return res.json();
+}
+
+export async function finishTopic(topicId: string, force = false): Promise<MergeResult> {
+  const res = await fetch(`${API_BASE}/topics/${topicId}/finish`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ force }),
+  });
+  const data = await res.json();
+  if (!res.ok && !data.message) {
+    throw new Error(`Failed to finish topic: ${res.statusText}`);
   }
   return data;
 }

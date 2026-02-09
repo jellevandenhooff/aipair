@@ -14,7 +14,8 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 
 use crate::jj::Jj;
-use crate::review::{Author, Review, ReviewStore};
+use crate::review::{Author, Review, ReviewStore, ThreadStatus};
+use crate::topic::TopicStore;
 
 #[cfg(feature = "bundled-frontend")]
 mod embedded {
@@ -56,14 +57,17 @@ async fn static_handler(uri: axum::http::Uri) -> impl IntoResponse {
 struct AppState {
     jj: Jj,
     store: ReviewStore,
+    topics: TopicStore,
 }
 
 pub async fn serve(port: u16) -> anyhow::Result<()> {
     let jj = Jj::discover()?;
     let store = ReviewStore::new(jj.repo_path());
     store.init()?;
+    let topics = TopicStore::new(jj.repo_path());
+    topics.init()?;
 
-    let state = Arc::new(AppState { jj, store });
+    let state = Arc::new(AppState { jj, store, topics });
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -84,6 +88,9 @@ pub async fn serve(port: u16) -> anyhow::Result<()> {
         .route("/api/changes/{change_id}/threads/{thread_id}/resolve", post(resolve_thread))
         .route("/api/changes/{change_id}/threads/{thread_id}/reopen", post(reopen_thread))
         .route("/api/changes/{change_id}/merge", post(merge_change))
+        .route("/api/topics", get(list_topics))
+        .route("/api/topics/{topic_id}", get(get_topic))
+        .route("/api/topics/{topic_id}/finish", post(finish_topic))
         .with_state(state)
         .merge(mcp_router);
 
@@ -121,6 +128,8 @@ struct ChangeWithStatus {
     open_thread_count: usize,
     revision_count: usize,
     has_pending_changes: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    topic_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -147,6 +156,13 @@ async fn list_changes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         .map(|r| (r.change_id.clone(), r))
         .collect();
 
+    // Load all topics to map changes to topic IDs
+    let topics = state.topics.list().unwrap_or_default();
+    let change_to_topic: std::collections::HashMap<String, String> = topics
+        .iter()
+        .flat_map(|t| t.changes.iter().map(move |c| (c.clone(), t.id.clone())))
+        .collect();
+
     // A change is merged if it appears at or after the main bookmark in the ancestor list
     // The list is ordered newest to oldest, so we find main's position and mark everything from there
     let main_idx = main_change_id
@@ -164,7 +180,7 @@ async fn list_changes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                     let open = r
                         .threads
                         .iter()
-                        .filter(|t| t.status == crate::review::ThreadStatus::Open)
+                        .filter(|t| t.status == ThreadStatus::Open)
                         .count();
                     // Pending if working_commit differs from last revision's commit
                     let pending = match (r.working_commit_id.as_ref(), r.revisions.last()) {
@@ -182,12 +198,14 @@ async fn list_changes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                     r.working_commit_id.as_ref().map(|w| w != &change.commit_id).unwrap_or(false)
                 })
                 .unwrap_or(false);
+            let topic_id = change_to_topic.get(&change.change_id).cloned();
             ChangeWithStatus {
                 change,
                 merged,
                 open_thread_count,
                 revision_count,
                 has_pending_changes,
+                topic_id,
             }
         })
         .collect();
@@ -540,7 +558,7 @@ async fn merge_change(
             let open_threads: Vec<_> = review
                 .threads
                 .iter()
-                .filter(|t| t.status == crate::review::ThreadStatus::Open)
+                .filter(|t| t.status == ThreadStatus::Open)
                 .collect();
 
             if !open_threads.is_empty() {
@@ -568,6 +586,241 @@ async fn merge_change(
         .into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+}
+
+// --- Topic endpoints ---
+
+#[derive(Serialize)]
+struct TopicChangeInfo {
+    change_id: String,
+    description: String,
+    open_thread_count: usize,
+}
+
+#[derive(Serialize)]
+struct TopicResponse {
+    id: String,
+    name: String,
+    status: crate::topic::TopicStatus,
+    change_count: usize,
+    changes: Vec<TopicChangeInfo>,
+    notes: Option<String>,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Serialize)]
+struct TopicsListResponse {
+    topics: Vec<TopicResponse>,
+}
+
+async fn list_topics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let topics = match state.topics.list() {
+        Ok(t) => t,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    // Get all changes for ordering
+    let all_changes = state.jj.log(200).unwrap_or_default();
+
+    let mut topic_responses = Vec::new();
+    for topic in &topics {
+        // Sort topic's changes in topological order (jj log returns newest first, reverse for base-to-tip)
+        let mut ordered: Vec<_> = all_changes
+            .iter()
+            .filter(|c| topic.changes.contains(&c.change_id))
+            .collect();
+        ordered.reverse();
+
+        let changes: Vec<TopicChangeInfo> = ordered
+            .iter()
+            .map(|c| {
+                let open_threads = state
+                    .store
+                    .get(&c.change_id)
+                    .ok()
+                    .flatten()
+                    .map(|r| {
+                        r.threads
+                            .iter()
+                            .filter(|t| t.status == ThreadStatus::Open)
+                            .count()
+                    })
+                    .unwrap_or(0);
+                TopicChangeInfo {
+                    change_id: c.change_id.clone(),
+                    description: c.description.clone(),
+                    open_thread_count: open_threads,
+                }
+            })
+            .collect();
+
+        let notes = state.topics.get_notes(&topic.id).ok().filter(|n| !n.is_empty());
+
+        topic_responses.push(TopicResponse {
+            id: topic.id.clone(),
+            name: topic.name.clone(),
+            status: topic.status.clone(),
+            change_count: topic.changes.len(),
+            changes,
+            notes,
+            created_at: topic.created_at,
+        });
+    }
+
+    Json(TopicsListResponse {
+        topics: topic_responses,
+    })
+    .into_response()
+}
+
+async fn get_topic(
+    State(state): State<Arc<AppState>>,
+    Path(topic_id): Path<String>,
+) -> impl IntoResponse {
+    let topic = match state.topics.get(&topic_id) {
+        Ok(Some(t)) => t,
+        Ok(None) => return (StatusCode::NOT_FOUND, "Topic not found").into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    let all_changes = state.jj.log(200).unwrap_or_default();
+    let mut ordered: Vec<_> = all_changes
+        .iter()
+        .filter(|c| topic.changes.contains(&c.change_id))
+        .collect();
+    ordered.reverse();
+
+    let changes: Vec<TopicChangeInfo> = ordered
+        .iter()
+        .map(|c| {
+            let open_threads = state
+                .store
+                .get(&c.change_id)
+                .ok()
+                .flatten()
+                .map(|r| {
+                    r.threads
+                        .iter()
+                        .filter(|t| t.status == ThreadStatus::Open)
+                        .count()
+                })
+                .unwrap_or(0);
+            TopicChangeInfo {
+                change_id: c.change_id.clone(),
+                description: c.description.clone(),
+                open_thread_count: open_threads,
+            }
+        })
+        .collect();
+
+    let notes = state.topics.get_notes(&topic.id).ok().filter(|n| !n.is_empty());
+
+    Json(TopicResponse {
+        id: topic.id.clone(),
+        name: topic.name.clone(),
+        status: topic.status.clone(),
+        change_count: topic.changes.len(),
+        changes,
+        notes,
+        created_at: topic.created_at,
+    })
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct FinishTopicRequest {
+    #[serde(default)]
+    force: bool,
+}
+
+async fn finish_topic(
+    State(state): State<Arc<AppState>>,
+    Path(topic_id): Path<String>,
+    Json(req): Json<FinishTopicRequest>,
+) -> impl IntoResponse {
+    let topic = match state.topics.get(&topic_id) {
+        Ok(Some(t)) => t,
+        Ok(None) => return (StatusCode::NOT_FOUND, "Topic not found".to_string()).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    if topic.changes.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "Topic has no changes".to_string(),
+        )
+            .into_response();
+    }
+
+    let all_changes = match state.jj.log(200) {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    let ordered: Vec<_> = all_changes
+        .iter()
+        .filter(|c| topic.changes.contains(&c.change_id))
+        .collect();
+
+    if ordered.len() != topic.changes.len() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "Some topic changes not found in jj log".to_string(),
+        )
+            .into_response();
+    }
+
+    // Validate descriptions
+    let empty: Vec<_> = ordered
+        .iter()
+        .filter(|c| c.description.trim().is_empty())
+        .map(|c| c.change_id[..8.min(c.change_id.len())].to_string())
+        .collect();
+    if !empty.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("Changes with empty descriptions: {}", empty.join(", ")),
+        )
+            .into_response();
+    }
+
+    // Validate open threads
+    if !req.force {
+        let mut total_open = 0;
+        for change in &ordered {
+            if let Ok(Some(review)) = state.store.get(&change.change_id) {
+                total_open += review
+                    .threads
+                    .iter()
+                    .filter(|t| t.status == ThreadStatus::Open)
+                    .count();
+            }
+        }
+        if total_open > 0 {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("{} open review thread(s). Use force to override.", total_open),
+            )
+                .into_response();
+        }
+    }
+
+    // Tip is first in ordered (newest first from jj log)
+    let tip = &ordered[0];
+
+    if let Err(e) = state.jj.move_bookmark("main", &tip.change_id) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+
+    if let Err(e) = state.topics.finish(&topic_id) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+
+    Json(serde_json::json!({
+        "success": true,
+        "message": format!("Finished topic '{}'. main moved to {}.", topic.name, &tip.change_id[..8.min(tip.change_id.len())])
+    }))
+    .into_response()
 }
 
 #[cfg(test)]

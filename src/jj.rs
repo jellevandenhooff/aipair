@@ -90,16 +90,17 @@ impl Jj {
         &self.repo_path
     }
 
-    /// List recent changes
+    /// List recent changes across all heads
     pub fn log(&self, limit: usize) -> Result<Vec<Change>> {
         // Use json(self) for proper escaping of description, append empty flag with tab separator
+        // Walk from all visible heads (not just @) to capture changes across branches/topics
         let output = Command::new("jj")
             .current_dir(&self.repo_path)
             .args([
                 "log",
                 "--no-graph",
                 "-r",
-                &format!("ancestors(@, {limit})"),
+                &format!("ancestors(visible_heads(), {limit})"),
                 "-T",
                 r#"json(self) ++ "\t" ++ empty ++ "\n""#,
             ])
