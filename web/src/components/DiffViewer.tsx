@@ -165,9 +165,18 @@ function insertInlineRows(
   const result: Row[] = [];
 
   // Build a map of file:lineEnd -> threads that end on that line
+  // Use display_line_end (mapped position) when available, falling back to stored line_end
   const threadsByEndLine = new Map<string, Thread[]>();
+  const deletedThreadsByFile = new Map<string, Thread[]>();
   for (const thread of threads) {
-    const key = `${thread.file}:${thread.line_end}`;
+    if (thread.is_deleted) {
+      const existing = deletedThreadsByFile.get(thread.file) || [];
+      existing.push(thread);
+      deletedThreadsByFile.set(thread.file, existing);
+      continue;
+    }
+    const displayEnd = thread.display_line_end ?? thread.line_end;
+    const key = `${thread.file}:${displayEnd}`;
     const existing = threadsByEndLine.get(key) || [];
     existing.push(thread);
     threadsByEndLine.set(key, existing);
@@ -178,6 +187,14 @@ function insertInlineRows(
 
   for (const row of baseRows) {
     result.push(row);
+
+    // Insert deleted threads after their file header
+    if (row.type === 'file-header') {
+      const deleted = deletedThreadsByFile.get(row.path) || [];
+      for (const thread of deleted) {
+        result.push({ type: 'thread', thread });
+      }
+    }
 
     if (row.type === 'line') {
       const lineNum = row.line.newLineNum ?? row.line.oldLineNum ?? 0;
@@ -733,7 +750,17 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
             }`}
           >
             <div className="text-xs text-gray-400 mb-2 font-mono">
-              {thread.file}:{thread.line_start}-{thread.line_end}
+              {thread.file}:{thread.display_line_start ?? thread.line_start}-{thread.display_line_end ?? thread.line_end}
+              {thread.is_displaced && !thread.is_deleted && (
+                <span className="ml-1 text-amber-500" title={`Originally :${thread.line_start}-${thread.line_end}`}>
+                  (moved)
+                </span>
+              )}
+              {thread.is_deleted && (
+                <span className="ml-1 text-red-500">
+                  (lines deleted)
+                </span>
+              )}
               <span className="ml-2 text-gray-300">[{thread.id}]</span>
             </div>
             <div className="space-y-2">

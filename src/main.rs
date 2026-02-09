@@ -1,5 +1,6 @@
 mod api;
 mod jj;
+mod line_mapper;
 mod mcp;
 mod review;
 

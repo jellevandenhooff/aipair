@@ -45,6 +45,15 @@ pub struct Thread {
     pub created_at_commit: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at_revision: Option<u32>,
+    /// Display position after mapping through diffs (not persisted)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_line_start: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_line_end: Option<usize>,
+    #[serde(default)]
+    pub is_displaced: bool,
+    #[serde(default)]
+    pub is_deleted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
@@ -281,6 +290,10 @@ impl ReviewStore {
                     }],
                     created_at_commit: Some(commit_id.to_string()),
                     created_at_revision: current_revision,
+                    display_line_start: None,
+                    display_line_end: None,
+                    is_displaced: false,
+                    is_deleted: false,
                 });
                 id
             }

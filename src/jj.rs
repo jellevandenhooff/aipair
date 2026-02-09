@@ -225,6 +225,24 @@ impl Jj {
         Ok(files)
     }
 
+    /// Get raw git diff between two commits for a specific file
+    pub fn diff_raw_between(&self, from: &str, to: &str, file: &str) -> Result<String> {
+        let output = Command::new("jj")
+            .current_dir(&self.repo_path)
+            .args(["diff", "--from", from, "--to", to, "--git", "--", file])
+            .output()
+            .context("Failed to run jj diff")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "jj diff failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(String::from_utf8(output.stdout)?)
+    }
+
     /// Show file content at a specific revision
     pub fn show_file(&self, change_id: &str, path: &str) -> Result<String> {
         let output = Command::new("jj")

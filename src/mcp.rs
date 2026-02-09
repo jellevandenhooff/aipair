@@ -137,7 +137,7 @@ impl ReviewService {
 
         let mut output = String::new();
 
-        for review in reviews {
+        for mut review in reviews {
             let open_threads: Vec<_> = review
                 .threads
                 .iter()
@@ -148,35 +148,94 @@ impl ReviewService {
                 continue;
             }
 
+            // Map thread positions to current commit
+            let target_commit = review.working_commit_id.clone()
+                .or_else(|| jj.get_change(&review.change_id).ok().map(|c| c.commit_id));
+
+            if let Some(ref target) = target_commit {
+                let mapped = crate::line_mapper::map_all_threads(&jj, &review.threads, target);
+                for thread in &mut review.threads {
+                    if let Some(pos) = mapped.get(&thread.id) {
+                        thread.display_line_start = pos.line_start;
+                        thread.display_line_end = pos.line_end;
+                        thread.is_deleted = pos.is_deleted;
+                        thread.is_displaced = pos.line_start != Some(thread.line_start)
+                            || pos.line_end != Some(thread.line_end);
+                    }
+                }
+            }
+
+            // Re-filter after mutation
+            let open_threads: Vec<_> = review
+                .threads
+                .iter()
+                .filter(|t| t.status == ThreadStatus::Open)
+                .collect();
+
             output.push_str(&format!("## Change: {}\n\n", &review.change_id[..8.min(review.change_id.len())]));
 
             for thread in open_threads {
-                output.push_str(&format!(
-                    "### Thread {} - {}:{}-{}\n\n",
-                    &thread.id[..8.min(thread.id.len())], thread.file, thread.line_start, thread.line_end
-                ));
+                // Use mapped positions for display
+                let display_start = thread.display_line_start.unwrap_or(thread.line_start);
+                let display_end = thread.display_line_end.unwrap_or(thread.line_end);
 
-                // Try to get code context
-                if let Ok(file_content) = jj.show_file(&review.change_id, &thread.file) {
-                    let lines: Vec<&str> = file_content.lines().collect();
-                    let start = thread.line_start.saturating_sub(3).max(1);
-                    let end = (thread.line_end + 3).min(lines.len());
+                // Show header with original position info if displaced
+                if thread.is_displaced || thread.is_deleted {
+                    output.push_str(&format!(
+                        "### Thread {} - {}:{}-{} (originally :{}−{} in revision {})\n\n",
+                        &thread.id[..8.min(thread.id.len())],
+                        thread.file,
+                        display_start,
+                        display_end,
+                        thread.line_start,
+                        thread.line_end,
+                        thread.created_at_revision.map(|n| format!("v{}", n)).unwrap_or_else(|| "?".to_string()),
+                    ));
+                } else {
+                    output.push_str(&format!(
+                        "### Thread {} - {}:{}-{}\n\n",
+                        &thread.id[..8.min(thread.id.len())], thread.file, display_start, display_end
+                    ));
+                }
 
-                    output.push_str("```\n");
-                    for (i, line) in lines.iter().enumerate() {
-                        let line_num = i + 1;
-                        if line_num >= start && line_num <= end {
-                            let marker = if line_num >= thread.line_start
-                                && line_num <= thread.line_end
-                            {
-                                ">"
-                            } else {
-                                " "
-                            };
-                            output.push_str(&format!("{} {:4} | {}\n", marker, line_num, line));
+                if thread.is_deleted {
+                    output.push_str("**Note:** The commented lines have been deleted.\n\n");
+                }
+
+                // Show code context at mapped position
+                if !thread.is_deleted {
+                    if let Ok(file_content) = jj.show_file(&review.change_id, &thread.file) {
+                        let lines: Vec<&str> = file_content.lines().collect();
+                        let start = display_start.saturating_sub(3).max(1);
+                        let end = (display_end + 3).min(lines.len());
+
+                        output.push_str("```\n");
+                        for (i, line) in lines.iter().enumerate() {
+                            let line_num = i + 1;
+                            if line_num >= start && line_num <= end {
+                                let marker = if line_num >= display_start
+                                    && line_num <= display_end
+                                {
+                                    ">"
+                                } else {
+                                    " "
+                                };
+                                output.push_str(&format!("{} {:4} | {}\n", marker, line_num, line));
+                            }
                         }
+                        output.push_str("```\n\n");
                     }
-                    output.push_str("```\n\n");
+                }
+
+                // Show original revision info if available
+                if let Some(rev_num) = thread.created_at_revision {
+                    if let Some(ref commit) = thread.created_at_commit {
+                        output.push_str(&format!(
+                            "**Original revision:** v{} (commit {})\n",
+                            rev_num,
+                            &commit[..8.min(commit.len())]
+                        ));
+                    }
                 }
 
                 // Show comments

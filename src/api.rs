@@ -307,6 +307,25 @@ fn add_pending_revision_if_needed(mut review: Review, current_commit_id: &str) -
     review
 }
 
+/// Populate display positions on threads by mapping through diffs
+fn populate_display_positions(jj: &crate::jj::Jj, review: &mut Review, current_commit_id: &str) {
+    if current_commit_id.is_empty() {
+        return;
+    }
+
+    let mapped = crate::line_mapper::map_all_threads(jj, &review.threads, current_commit_id);
+
+    for thread in &mut review.threads {
+        if let Some(pos) = mapped.get(&thread.id) {
+            thread.display_line_start = pos.line_start;
+            thread.display_line_end = pos.line_end;
+            thread.is_deleted = pos.is_deleted;
+            thread.is_displaced = pos.line_start != Some(thread.line_start)
+                || pos.line_end != Some(thread.line_end);
+        }
+    }
+}
+
 async fn get_review(
     State(state): State<Arc<AppState>>,
     Path(change_id): Path<String>,
@@ -318,7 +337,8 @@ async fn get_review(
 
     match state.store.get(&change_id) {
         Ok(Some(review)) => {
-            let review = add_pending_revision_if_needed(review, &current_commit_id);
+            let mut review = add_pending_revision_if_needed(review, &current_commit_id);
+            populate_display_positions(&state.jj, &mut review, &current_commit_id);
             Json(ReviewResponse { review: Some(review) }).into_response()
         }
         Ok(None) => Json(ReviewResponse { review: None }).into_response(),

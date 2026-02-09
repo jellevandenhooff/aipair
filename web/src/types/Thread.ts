@@ -2,4 +2,8 @@
 import type { Comment } from "./Comment";
 import type { ThreadStatus } from "./ThreadStatus";
 
-export type Thread = { id: string, file: string, line_start: number, line_end: number, status: ThreadStatus, comments: Array<Comment>, created_at_commit: string | null, created_at_revision: number | null, };
+export type Thread = { id: string, file: string, line_start: number, line_end: number, status: ThreadStatus, comments: Array<Comment>, created_at_commit: string | null, created_at_revision: number | null, 
+/**
+ * Display position after mapping through diffs (not persisted)
+ */
+display_line_start: number | null, display_line_end: number | null, is_displaced: boolean, is_deleted: boolean, };
