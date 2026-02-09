@@ -69,20 +69,3 @@ install: build
 clean:
     cargo clean
     rm -rf web/node_modules web/dist
-
-# Show CLI help
-help:
-    cargo run -- --help
-
-# Review commands (for Claude)
-review-list:
-    cargo run -- review list
-
-review-show change_id:
-    cargo run -- review show {{change_id}}
-
-review-reply change_id thread_id message:
-    cargo run -- review reply {{change_id}} {{thread_id}} "{{message}}"
-
-review-resolve change_id thread_id:
-    cargo run -- review resolve {{change_id}} {{thread_id}}
