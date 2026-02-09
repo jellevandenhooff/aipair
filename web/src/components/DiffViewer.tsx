@@ -167,14 +167,7 @@ function insertInlineRows(
   // Build a map of file:lineEnd -> threads that end on that line
   // Use display_line_end (mapped position) when available, falling back to stored line_end
   const threadsByEndLine = new Map<string, Thread[]>();
-  const deletedThreadsByFile = new Map<string, Thread[]>();
   for (const thread of threads) {
-    if (thread.is_deleted) {
-      const existing = deletedThreadsByFile.get(thread.file) || [];
-      existing.push(thread);
-      deletedThreadsByFile.set(thread.file, existing);
-      continue;
-    }
     const displayEnd = thread.display_line_end ?? thread.line_end;
     const key = `${thread.file}:${displayEnd}`;
     const existing = threadsByEndLine.get(key) || [];
@@ -187,14 +180,6 @@ function insertInlineRows(
 
   for (const row of baseRows) {
     result.push(row);
-
-    // Insert deleted threads after their file header
-    if (row.type === 'file-header') {
-      const deleted = deletedThreadsByFile.get(row.path) || [];
-      for (const thread of deleted) {
-        result.push({ type: 'thread', thread });
-      }
-    }
 
     if (row.type === 'line') {
       const lineNum = row.line.newLineNum ?? row.line.oldLineNum ?? 0;

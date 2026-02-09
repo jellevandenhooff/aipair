@@ -317,11 +317,11 @@ fn populate_display_positions(jj: &crate::jj::Jj, review: &mut Review, current_c
 
     for thread in &mut review.threads {
         if let Some(pos) = mapped.get(&thread.id) {
-            thread.display_line_start = pos.line_start;
-            thread.display_line_end = pos.line_end;
+            thread.display_line_start = Some(pos.line_start);
+            thread.display_line_end = Some(pos.line_end);
             thread.is_deleted = pos.is_deleted;
-            thread.is_displaced = pos.line_start != Some(thread.line_start)
-                || pos.line_end != Some(thread.line_end);
+            thread.is_displaced = pos.line_start != thread.line_start
+                || pos.line_end != thread.line_end;
         }
     }
 }

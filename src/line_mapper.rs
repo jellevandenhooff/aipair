@@ -23,8 +23,8 @@ pub enum HunkLine {
 /// Result of mapping a thread's position through a diff
 #[derive(Debug, Clone)]
 pub struct MappedPosition {
-    pub line_start: Option<usize>,
-    pub line_end: Option<usize>,
+    pub line_start: usize,
+    pub line_end: usize,
     pub is_deleted: bool,
 }
 
@@ -111,9 +111,17 @@ fn parse_range(s: &str) -> Option<(usize, usize)> {
     }
 }
 
+/// Result of mapping a single line through hunks.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LineMapping {
+    pub new_line: usize,
+    pub was_deleted: bool,
+}
+
 /// Map an old line number through hunks to find its new position.
-/// Returns None if the line was deleted.
-pub fn map_line(old_line: usize, hunks: &[Hunk]) -> Option<usize> {
+/// If the line was deleted, returns the nearest surviving line (scanning forward,
+/// then backward) with `was_deleted = true`.
+pub fn map_line(old_line: usize, hunks: &[Hunk]) -> LineMapping {
     let mut offset: isize = 0;
 
     for hunk in hunks {
@@ -121,26 +129,35 @@ pub fn map_line(old_line: usize, hunks: &[Hunk]) -> Option<usize> {
 
         // Line is before this hunk — apply accumulated offset
         if old_line < hunk.old_start {
-            return Some((old_line as isize + offset) as usize);
+            return LineMapping {
+                new_line: (old_line as isize + offset) as usize,
+                was_deleted: false,
+            };
         }
 
         // Line is inside this hunk — walk through hunk lines
         if old_line < hunk_old_end {
             let mut old_pos = hunk.old_start;
             let mut new_pos = hunk.new_start;
+            let mut last_surviving = None;
 
             for hunk_line in &hunk.lines {
                 match hunk_line {
                     HunkLine::Context => {
                         if old_pos == old_line {
-                            return Some(new_pos);
+                            return LineMapping { new_line: new_pos, was_deleted: false };
                         }
+                        last_surviving = Some(new_pos);
                         old_pos += 1;
                         new_pos += 1;
                     }
                     HunkLine::Delete => {
                         if old_pos == old_line {
-                            return None; // This line was deleted
+                            let anchor = find_nearest_surviving(hunk, old_line);
+                            return LineMapping {
+                                new_line: anchor,
+                                was_deleted: true,
+                            };
                         }
                         old_pos += 1;
                     }
@@ -150,9 +167,12 @@ pub fn map_line(old_line: usize, hunks: &[Hunk]) -> Option<usize> {
                 }
             }
 
-            // If we get here, the line wasn't found in the hunk
-            // (shouldn't happen with well-formed diffs)
-            return None;
+            // Line wasn't found in the hunk (shouldn't happen with well-formed diffs)
+            // Fall back to last surviving line or hunk start
+            return LineMapping {
+                new_line: last_surviving.unwrap_or(hunk.new_start),
+                was_deleted: true,
+            };
         }
 
         // Line is after this hunk — accumulate offset
@@ -160,7 +180,50 @@ pub fn map_line(old_line: usize, hunks: &[Hunk]) -> Option<usize> {
     }
 
     // Line is after all hunks
-    Some((old_line as isize + offset) as usize)
+    LineMapping {
+        new_line: (old_line as isize + offset) as usize,
+        was_deleted: false,
+    }
+}
+
+/// Find the nearest surviving new-file line for a deleted old-file line within a hunk.
+/// Scans forward first (next context line), then backward.
+fn find_nearest_surviving(hunk: &Hunk, deleted_old_line: usize) -> usize {
+    let mut old_pos = hunk.old_start;
+    let mut new_pos = hunk.new_start;
+
+    // Track the last new_pos we saw before reaching the deleted line
+    let mut last_before: Option<usize> = None;
+    let mut reached_target = false;
+
+    for hunk_line in &hunk.lines {
+        match hunk_line {
+            HunkLine::Context => {
+                if reached_target {
+                    return new_pos; // First surviving line after deletion
+                }
+                last_before = Some(new_pos);
+                old_pos += 1;
+                new_pos += 1;
+            }
+            HunkLine::Delete => {
+                if old_pos == deleted_old_line {
+                    reached_target = true;
+                }
+                old_pos += 1;
+            }
+            HunkLine::Add => {
+                if reached_target {
+                    // An added line right after the deletion — anchor here
+                    return new_pos;
+                }
+                new_pos += 1;
+            }
+        }
+    }
+
+    // No surviving line found after; use the last one before, or hunk start
+    last_before.unwrap_or(hunk.new_start.max(1))
 }
 
 /// Map all threads to their positions at the target commit.
@@ -183,8 +246,8 @@ pub fn map_all_threads(
                 results.insert(
                     thread.id.clone(),
                     MappedPosition {
-                        line_start: Some(thread.line_start),
-                        line_end: Some(thread.line_end),
+                        line_start: thread.line_start,
+                        line_end: thread.line_end,
                         is_deleted: false,
                     },
                 );
@@ -209,8 +272,8 @@ pub fn map_all_threads(
                     results.insert(
                         thread.id.clone(),
                         MappedPosition {
-                            line_start: None,
-                            line_end: None,
+                            line_start: thread.line_start,
+                            line_end: thread.line_end,
                             is_deleted: true,
                         },
                     );
@@ -225,8 +288,8 @@ pub fn map_all_threads(
                 results.insert(
                     thread.id.clone(),
                     MappedPosition {
-                        line_start: Some(thread.line_start),
-                        line_end: Some(thread.line_end),
+                        line_start: thread.line_start,
+                        line_end: thread.line_end,
                         is_deleted: false,
                     },
                 );
@@ -242,8 +305,8 @@ pub fn map_all_threads(
                 results.insert(
                     thread.id.clone(),
                     MappedPosition {
-                        line_start: None,
-                        line_end: None,
+                        line_start: thread.line_start,
+                        line_end: thread.line_end,
                         is_deleted: true,
                     },
                 );
@@ -255,13 +318,13 @@ pub fn map_all_threads(
             let mapped_start = map_line(thread.line_start, &hunks);
             let mapped_end = map_line(thread.line_end, &hunks);
 
-            let is_deleted = mapped_start.is_none() || mapped_end.is_none();
+            let is_deleted = mapped_start.was_deleted || mapped_end.was_deleted;
 
             results.insert(
                 thread.id.clone(),
                 MappedPosition {
-                    line_start: mapped_start,
-                    line_end: mapped_end,
+                    line_start: mapped_start.new_line,
+                    line_end: mapped_end.new_line,
                     is_deleted,
                 },
             );
@@ -314,128 +377,166 @@ diff --git a/src/main.rs b/src/main.rs
         assert_eq!(hunks[0].new_count, 5);
     }
 
+    fn at(line: usize) -> LineMapping {
+        LineMapping { new_line: line, was_deleted: false }
+    }
+
+    fn deleted(line: usize) -> LineMapping {
+        LineMapping { new_line: line, was_deleted: true }
+    }
+
+    fn hunks(diff: &str) -> Vec<Hunk> {
+        parse_file_hunks(diff, "f.rs")
+    }
+
     #[test]
     fn test_map_line_before_hunk() {
-        // Hunk at lines 10-12, adding 2 lines
-        let hunks = vec![Hunk {
-            old_start: 10,
-            old_count: 3,
-            new_start: 10,
-            new_count: 5,
-            lines: vec![
-                HunkLine::Context,
-                HunkLine::Add,
-                HunkLine::Add,
-                HunkLine::Context,
-                HunkLine::Context,
-            ],
-        }];
-        // Line 5 is before the hunk, no offset yet
-        assert_eq!(map_line(5, &hunks), Some(5));
+        // 2 lines inserted after line 10 — line 5 is untouched
+        let h = hunks("\
+diff --git a/f.rs b/f.rs
+--- a/f.rs
++++ b/f.rs
+@@ -10,3 +10,5 @@
+ line 10
++new a
++new b
+ line 11
+ line 12
+");
+        assert_eq!(map_line(5, &h), at(5));
     }
 
     #[test]
     fn test_map_line_after_hunk() {
-        // Hunk adds 2 lines (old_count=3, new_count=5)
-        let hunks = vec![Hunk {
-            old_start: 10,
-            old_count: 3,
-            new_start: 10,
-            new_count: 5,
-            lines: vec![
-                HunkLine::Context,
-                HunkLine::Add,
-                HunkLine::Add,
-                HunkLine::Context,
-                HunkLine::Context,
-            ],
-        }];
-        // Line 20 is after the hunk, offset = +2
-        assert_eq!(map_line(20, &hunks), Some(22));
+        // 2 lines inserted after line 10 — line 20 shifts to 22
+        let h = hunks("\
+diff --git a/f.rs b/f.rs
+--- a/f.rs
++++ b/f.rs
+@@ -10,3 +10,5 @@
+ line 10
++new a
++new b
+ line 11
+ line 12
+");
+        assert_eq!(map_line(20, &h), at(22));
     }
 
     #[test]
-    fn test_map_line_deleted() {
-        let hunks = vec![Hunk {
-            old_start: 10,
-            old_count: 3,
-            new_start: 10,
-            new_count: 1,
-            lines: vec![
-                HunkLine::Context,
-                HunkLine::Delete,
-                HunkLine::Delete,
-            ],
-        }];
-        // Line 11 was deleted
-        assert_eq!(map_line(11, &hunks), None);
-        // Line 12 was also deleted
-        assert_eq!(map_line(12, &hunks), None);
-        // Line 10 is context, maps to 10
-        assert_eq!(map_line(10, &hunks), Some(10));
+    fn test_map_line_deleted_anchors_backward() {
+        // Lines 11-12 deleted, line 10 survives as context
+        let h = hunks("\
+diff --git a/f.rs b/f.rs
+--- a/f.rs
++++ b/f.rs
+@@ -10,3 +10,1 @@
+ line 10
+-line 11
+-line 12
+");
+        assert_eq!(map_line(11, &h), deleted(10));
+        assert_eq!(map_line(12, &h), deleted(10));
+        assert_eq!(map_line(10, &h), at(10));
+    }
+
+    #[test]
+    fn test_map_line_deleted_anchors_forward() {
+        // Lines 10-11 deleted, line 12 survives as context
+        let h = hunks("\
+diff --git a/f.rs b/f.rs
+--- a/f.rs
++++ b/f.rs
+@@ -10,3 +10,1 @@
+-line 10
+-line 11
+ line 12
+");
+        assert_eq!(map_line(10, &h), deleted(10));
+        assert_eq!(map_line(11, &h), deleted(10));
+    }
+
+    #[test]
+    fn test_map_line_deleted_anchors_to_replacement() {
+        // Lines 10-11 deleted, replaced by 3 new lines
+        let h = hunks("\
+diff --git a/f.rs b/f.rs
+--- a/f.rs
++++ b/f.rs
+@@ -10,2 +10,3 @@
+-old line 10
+-old line 11
++new a
++new b
++new c
+");
+        assert_eq!(map_line(10, &h), deleted(10));
+        assert_eq!(map_line(11, &h), deleted(10));
+    }
+
+    #[test]
+    fn test_map_line_deleted_all_lines_in_hunk() {
+        // All 3 lines in the hunk deleted, nothing added
+        let h = hunks("\
+diff --git a/f.rs b/f.rs
+--- a/f.rs
++++ b/f.rs
+@@ -10,3 +10,0 @@
+-line 10
+-line 11
+-line 12
+");
+        assert_eq!(map_line(10, &h), deleted(10));
+        assert_eq!(map_line(12, &h), deleted(10));
     }
 
     #[test]
     fn test_map_line_context_inside_hunk() {
-        let hunks = vec![Hunk {
-            old_start: 10,
-            old_count: 2,
-            new_start: 10,
-            new_count: 4,
-            lines: vec![
-                HunkLine::Context,
-                HunkLine::Add,
-                HunkLine::Add,
-                HunkLine::Context,
-            ],
-        }];
-        // Line 10 is context at start
-        assert_eq!(map_line(10, &hunks), Some(10));
-        // Line 11 is context after 2 adds
-        assert_eq!(map_line(11, &hunks), Some(13));
+        // 2 lines added between context lines 10 and 11
+        let h = hunks("\
+diff --git a/f.rs b/f.rs
+--- a/f.rs
++++ b/f.rs
+@@ -10,2 +10,4 @@
+ line 10
++new a
++new b
+ line 11
+");
+        assert_eq!(map_line(10, &h), at(10));
+        assert_eq!(map_line(11, &h), at(13));
     }
 
     #[test]
     fn test_map_line_multiple_hunks() {
-        let hunks = vec![
-            Hunk {
-                old_start: 5,
-                old_count: 2,
-                new_start: 5,
-                new_count: 4,
-                lines: vec![
-                    HunkLine::Context,
-                    HunkLine::Add,
-                    HunkLine::Add,
-                    HunkLine::Context,
-                ],
-            },
-            Hunk {
-                old_start: 20,
-                old_count: 3,
-                new_start: 22,
-                new_count: 1,
-                lines: vec![
-                    HunkLine::Context,
-                    HunkLine::Delete,
-                    HunkLine::Delete,
-                ],
-            },
-        ];
+        // First hunk: 2 adds after line 5. Second hunk: delete lines 21-22
+        let h = hunks("\
+diff --git a/f.rs b/f.rs
+--- a/f.rs
++++ b/f.rs
+@@ -5,2 +5,4 @@
+ line 5
++new a
++new b
+ line 6
+@@ -20,3 +22,1 @@
+ line 20
+-line 21
+-line 22
+");
         // Before first hunk
-        assert_eq!(map_line(3, &hunks), Some(3));
-        // Between hunks: offset = +2 from first hunk
-        assert_eq!(map_line(10, &hunks), Some(12));
-        // Inside second hunk: line 21 deleted
-        assert_eq!(map_line(21, &hunks), None);
-        // After second hunk: offset = +2 - 2 = 0
-        assert_eq!(map_line(30, &hunks), Some(30));
+        assert_eq!(map_line(3, &h), at(3));
+        // Between hunks: offset +2
+        assert_eq!(map_line(10, &h), at(12));
+        // Deleted line 21 anchors to context line 20 (new pos 22)
+        assert_eq!(map_line(21, &h), deleted(22));
+        // After both hunks: +2 - 2 = 0
+        assert_eq!(map_line(30, &h), at(30));
     }
 
     #[test]
     fn test_no_hunks() {
-        let hunks: Vec<Hunk> = vec![];
-        assert_eq!(map_line(42, &hunks), Some(42));
+        assert_eq!(map_line(42, &[]), at(42));
     }
 
     #[test]
@@ -563,8 +664,8 @@ mod integration_tests {
         let mapped = map_all_threads(&jj, &threads, &commit2);
 
         let pos = &mapped["t1"];
-        assert_eq!(pos.line_start, Some(8));
-        assert_eq!(pos.line_end, Some(8));
+        assert_eq!(pos.line_start, 8);
+        assert_eq!(pos.line_end, 8);
         assert!(!pos.is_deleted);
     }
 
@@ -595,8 +696,8 @@ mod integration_tests {
         let mapped = map_all_threads(&jj, &threads, &commit2);
 
         let pos = &mapped["t1"];
-        assert_eq!(pos.line_start, Some(5));
-        assert_eq!(pos.line_end, Some(5));
+        assert_eq!(pos.line_start, 5);
+        assert_eq!(pos.line_end, 5);
         assert!(!pos.is_deleted);
     }
 
@@ -626,7 +727,8 @@ mod integration_tests {
 
         let pos = &mapped["t1"];
         assert!(pos.is_deleted);
-        assert_eq!(pos.line_start, None);
+        // Deleted line anchors to nearest surviving line (line 6 becomes line 5)
+        assert_eq!(pos.line_start, 5);
     }
 
     #[test]
@@ -645,8 +747,8 @@ mod integration_tests {
         let mapped = map_all_threads(&jj, &threads, &commit1);
 
         let pos = &mapped["t1"];
-        assert_eq!(pos.line_start, Some(2));
-        assert_eq!(pos.line_end, Some(3));
+        assert_eq!(pos.line_start, 2);
+        assert_eq!(pos.line_end, 3);
         assert!(!pos.is_deleted);
     }
 
@@ -682,15 +784,15 @@ mod integration_tests {
         ];
         let mapped = map_all_threads(&jj, &threads, &commit2);
 
-        assert_eq!(mapped["t1"].line_start, Some(1));
+        assert_eq!(mapped["t1"].line_start, 1);
         assert!(!mapped["t1"].is_deleted);
 
-        assert_eq!(mapped["t2"].line_start, Some(12));
+        assert_eq!(mapped["t2"].line_start, 12);
         assert!(!mapped["t2"].is_deleted);
 
         assert!(mapped["t3"].is_deleted);
 
-        assert_eq!(mapped["t4"].line_start, Some(21));
+        assert_eq!(mapped["t4"].line_start, 21);
         assert!(!mapped["t4"].is_deleted);
     }
 
@@ -745,7 +847,7 @@ mod integration_tests {
 
         let mapped = map_all_threads(&jj, &threads, &commit1);
         let pos = &mapped["t1"];
-        assert_eq!(pos.line_start, Some(1));
+        assert_eq!(pos.line_start, 1);
         assert!(!pos.is_deleted);
     }
 }
