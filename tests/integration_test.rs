@@ -9,7 +9,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 
 struct TestHarness {
-    temp_dir: TempDir,
+    _temp_dir: TempDir,
     server: Child,
     client: Client,
     base_url: String,
@@ -88,15 +88,11 @@ impl TestHarness {
         }
 
         Self {
-            temp_dir,
+            _temp_dir: temp_dir,
             server,
             client,
             base_url,
         }
-    }
-
-    fn repo_path(&self) -> &std::path::Path {
-        self.temp_dir.path()
     }
 
     async fn get(&self, path: &str) -> reqwest::Response {

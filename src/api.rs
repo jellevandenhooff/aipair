@@ -266,7 +266,7 @@ async fn get_diff(
 
     // Compute message diff when comparing revisions
     let message_diff = match (query.base.as_ref(), query.commit.as_ref()) {
-        (Some(base), Some(commit)) => {
+        (Some(base), Some(_commit)) => {
             let base_msg = state.jj.get_change(base).ok().map(|c| c.description).unwrap_or_default();
             let target_msg = target_message.clone().unwrap_or_default();
             if base_msg != target_msg {

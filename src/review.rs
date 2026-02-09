@@ -13,7 +13,7 @@ pub struct Revision {
     pub number: u32,
     pub commit_id: String,
     pub created_at: DateTime<Utc>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
     pub is_pending: bool,
@@ -28,7 +28,7 @@ pub struct Review {
     pub threads: Vec<Thread>,
     #[serde(default)]
     pub revisions: Vec<Revision>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub working_commit_id: Option<String>,
 }
 
@@ -41,14 +41,14 @@ pub struct Thread {
     pub line_end: usize,
     pub status: ThreadStatus,
     pub comments: Vec<Comment>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub created_at_commit: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub created_at_revision: Option<u32>,
     /// Display position after mapping through diffs (not persisted)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub display_line_start: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub display_line_end: Option<usize>,
     #[serde(default)]
     pub is_displaced: bool,
