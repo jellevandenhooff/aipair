@@ -4,7 +4,11 @@ import {
   fetchDiff,
   fetchReview,
   fetchTopics,
+  fetchTodos,
   createReview,
+  createTodo as apiCreateTodo,
+  updateTodo as apiUpdateTodo,
+  deleteTodo as apiDeleteTodo,
   replyToThread as apiReplyToThread,
   resolveThread as apiResolveThread,
   reopenThread as apiReopenThread,
@@ -14,6 +18,7 @@ import {
   type DiffResponse,
   type Review,
   type TopicsResponse,
+  type TodoTree,
 } from './api';
 
 // Hook for fetching changes list with DAG graph (suspense mode - always returns data)
@@ -115,5 +120,34 @@ export async function mergeChange(changeId: string, force = false) {
   return result;
 }
 
+// Hook for fetching todos (suspense mode, polled every 3s)
+export function useTodos(): TodoTree {
+  const { data } = useSWR('todos', () => fetchTodos(), {
+    suspense: true,
+    refreshInterval: 3000,
+    revalidateOnFocus: false,
+  });
+  return data!;
+}
+
+// Todo mutation helpers
+export async function addTodo(text: string, parentId?: string | null, afterId?: string | null) {
+  const tree = await apiCreateTodo(text, parentId, afterId);
+  mutate('todos', tree, false);
+  return tree;
+}
+
+export async function updateTodo(id: string, updates: { text?: string; checked?: boolean; parent_id?: string | null; after_id?: string | null }) {
+  const tree = await apiUpdateTodo(id, updates);
+  mutate('todos', tree, false);
+  return tree;
+}
+
+export async function removeTodo(id: string) {
+  const tree = await apiDeleteTodo(id);
+  mutate('todos', tree, false);
+  return tree;
+}
+
 // Re-export types for convenience
-export type { Change, ChangesData, DiffResponse, Review, TopicsResponse };
+export type { Change, ChangesData, DiffResponse, Review, TopicsResponse, TodoTree };

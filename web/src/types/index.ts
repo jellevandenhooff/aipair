@@ -11,6 +11,8 @@ export type { Revision } from './Revision';
 export type { Thread } from './Thread';
 export type { ThreadStatus } from './ThreadStatus';
 export type { TopicStatus } from './TopicStatus';
+export type { TodoItem } from './TodoItem';
+export type { TodoTree } from './TodoTree';
 
 // Import base Change type and extend with API-computed fields
 import type { Change as BaseChange } from './Change';

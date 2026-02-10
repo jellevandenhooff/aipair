@@ -3,7 +3,7 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::{get, post},
+    routing::{delete, get, patch, post},
 };
 #[cfg(feature = "bundled-frontend")]
 use axum::http::header;
@@ -16,6 +16,7 @@ use tracing::info;
 
 use crate::jj::Jj;
 use crate::review::{Author, Review, ReviewStore, ThreadStatus};
+use crate::todo::TodoStore;
 use crate::topic::TopicStore;
 
 #[cfg(feature = "bundled-frontend")]
@@ -59,6 +60,7 @@ struct AppState {
     jj: Jj,
     store: ReviewStore,
     topics: TopicStore,
+    todos: TodoStore,
 }
 
 pub async fn serve(port: u16) -> anyhow::Result<()> {
@@ -68,7 +70,8 @@ pub async fn serve(port: u16) -> anyhow::Result<()> {
     let topics = TopicStore::new(jj.repo_path());
     topics.init()?;
 
-    let state = Arc::new(AppState { jj, store, topics });
+    let todos = TodoStore::new(jj.repo_path());
+    let state = Arc::new(AppState { jj, store, topics, todos });
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -92,6 +95,10 @@ pub async fn serve(port: u16) -> anyhow::Result<()> {
         .route("/api/topics", get(list_topics))
         .route("/api/topics/{topic_id}", get(get_topic))
         .route("/api/topics/{topic_id}/finish", post(finish_topic))
+        .route("/api/todos", get(get_todos))
+        .route("/api/todos", post(create_todo))
+        .route("/api/todos/{id}", patch(update_todo))
+        .route("/api/todos/{id}", delete(delete_todo))
         .with_state(state)
         .merge(mcp_router);
 
@@ -873,6 +880,102 @@ async fn finish_topic(
         "message": format!("Finished topic '{}'. main moved to {}.", topic.name, &tip.change_id[..8.min(tip.change_id.len())])
     }))
     .into_response()
+}
+
+// --- Todo endpoints ---
+
+async fn get_todos(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let mut tree = match state.todos.load() {
+        Ok(t) => t,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    // Sync with topics
+    let topics = state.topics.list().unwrap_or_default();
+    if let Err(e) = state.todos.sync_topics(&mut tree, &topics) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+
+    Json(tree).into_response()
+}
+
+#[derive(Deserialize)]
+struct CreateTodoRequest {
+    text: String,
+    parent_id: Option<String>,
+    after_id: Option<String>,
+}
+
+async fn create_todo(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreateTodoRequest>,
+) -> impl IntoResponse {
+    let mut tree = match state.todos.load() {
+        Ok(t) => t,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    match state.todos.add_item(
+        &mut tree,
+        req.text,
+        req.parent_id.as_deref(),
+        req.after_id.as_deref(),
+    ) {
+        Ok(_id) => Json(tree).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct UpdateTodoRequest {
+    text: Option<String>,
+    checked: Option<bool>,
+    parent_id: Option<String>,
+    after_id: Option<String>,
+}
+
+async fn update_todo(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateTodoRequest>,
+) -> impl IntoResponse {
+    let mut tree = match state.todos.load() {
+        Ok(t) => t,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    // Update text/checked if provided
+    if req.text.is_some() || req.checked.is_some() {
+        if let Err(e) = state.todos.update_item(&mut tree, &id, req.text, req.checked) {
+            return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
+        }
+    }
+
+    // Move if parent_id is provided (including explicit null for "move to root")
+    if req.parent_id.is_some() {
+        let parent = req.parent_id.as_deref().filter(|s| !s.is_empty());
+        if let Err(e) = state.todos.move_item(&mut tree, &id, parent, req.after_id.as_deref()) {
+            return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
+        }
+    }
+
+    Json(tree).into_response()
+}
+
+async fn delete_todo(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let mut tree = match state.todos.load() {
+        Ok(t) => t,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    if let Err(e) = state.todos.delete_item(&mut tree, &id) {
+        return (StatusCode::BAD_REQUEST, e.to_string()).into_response();
+    }
+
+    Json(tree).into_response()
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@ import { flushSync } from 'react-dom';
 import type { Change } from './api';
 import type { Revision } from './types';
 
-type FocusedPanel = 'changes' | 'revisions' | 'diff' | 'threads';
+type FocusedPanel = 'changes' | 'revisions' | 'diff' | 'threads' | 'todos';
 
 // Selection state - triggers data fetching, needs transitions
 interface SelectionState {
@@ -16,6 +16,8 @@ interface SelectionState {
 interface UIState {
   focusedPanel: FocusedPanel;
   selectedThreadId: string | null;
+  selectedTodoId: string | null;
+  todoPanelVisible: boolean;
   newCommentText: string;
   replyingToThread: boolean;
   replyText: string;
@@ -49,9 +51,16 @@ interface AppContextValue {
   setReplyText: (text: string) => void;
   setSubmittingReply: (submitting: boolean) => void;
 
+  // Todo panel
+  selectedTodoId: string | null;
+  setSelectedTodoId: (id: string | null) => void;
+  todoPanelVisible: boolean;
+  toggleTodoPanel: () => void;
+
   // Navigation helpers
   navigateChanges: (direction: 'up' | 'down', changes: Change[], selectFn?: (id: string) => void) => void;
   navigateThreads: (direction: 'up' | 'down', threadIds: string[]) => void;
+  navigateTodos: (direction: 'up' | 'down', todoIds: string[]) => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -69,6 +78,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [ui, setUI] = useState<UIState>({
     focusedPanel: 'changes',
     selectedThreadId: null,
+    selectedTodoId: null,
+    todoPanelVisible: false,
     newCommentText: '',
     replyingToThread: false,
     replyText: '',
@@ -134,23 +145,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const cyclePanel = useCallback((reverse: boolean, hasThreads: boolean) => {
-    // Order: changes → diff → revisions → threads → changes
+    // Order: changes → diff → revisions → threads → todos → changes
     setUI(prev => {
-      const { focusedPanel } = prev;
+      const { focusedPanel, todoPanelVisible } = prev;
       let next: FocusedPanel;
 
       if (reverse) {
-        // Reverse: changes → threads → revisions → diff → changes
-        if (focusedPanel === 'changes') next = hasThreads ? 'threads' : 'revisions';
+        // Reverse: changes → todos → threads → revisions → diff → changes
+        if (focusedPanel === 'changes') next = todoPanelVisible ? 'todos' : (hasThreads ? 'threads' : 'revisions');
+        else if (focusedPanel === 'todos') next = hasThreads ? 'threads' : 'revisions';
         else if (focusedPanel === 'threads') next = 'revisions';
         else if (focusedPanel === 'revisions') next = 'diff';
         else next = 'changes'; // diff → changes
       } else {
-        // Forward: changes → diff → revisions → threads → changes
+        // Forward: changes → diff → revisions → threads → todos → changes
         if (focusedPanel === 'changes') next = 'diff';
         else if (focusedPanel === 'diff') next = 'revisions';
-        else if (focusedPanel === 'revisions') next = hasThreads ? 'threads' : 'changes';
-        else next = 'changes'; // threads → changes
+        else if (focusedPanel === 'revisions') next = hasThreads ? 'threads' : (todoPanelVisible ? 'todos' : 'changes');
+        else if (focusedPanel === 'threads') next = todoPanelVisible ? 'todos' : 'changes';
+        else next = 'changes'; // todos → changes
       }
 
       return { ...prev, focusedPanel: next };
@@ -185,6 +198,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setUI(prev => ({ ...prev, submittingReply: submitting }));
   }, []);
 
+  const setSelectedTodoId = useCallback((id: string | null) => {
+    setUI(prev => ({ ...prev, selectedTodoId: id }));
+  }, []);
+
+  const toggleTodoPanel = useCallback(() => {
+    setUI(prev => ({
+      ...prev,
+      todoPanelVisible: !prev.todoPanelVisible,
+      focusedPanel: !prev.todoPanelVisible ? 'todos' : (prev.focusedPanel === 'todos' ? 'changes' : prev.focusedPanel),
+    }));
+  }, []);
+
   // Navigation helpers
   const navigateChanges = useCallback((
     direction: 'up' | 'down',
@@ -215,10 +240,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     let nextIdx: number;
     if (direction === 'down') {
-      // If no selection, start at first; otherwise move down (clamped)
       nextIdx = currentIdx < 0 ? 0 : Math.min(currentIdx + 1, threadIds.length - 1);
     } else {
-      // If no selection, start at first; otherwise move up (clamped)
       nextIdx = currentIdx < 0 ? 0 : Math.max(currentIdx - 1, 0);
     }
 
@@ -226,6 +249,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     setUI(prev => ({ ...prev, selectedThreadId: threadIds[nextIdx] }));
   }, [ui.selectedThreadId]);
+
+  const navigateTodos = useCallback((direction: 'up' | 'down', todoIds: string[]) => {
+    if (todoIds.length === 0) return;
+
+    const currentIdx = ui.selectedTodoId ? todoIds.indexOf(ui.selectedTodoId) : -1;
+
+    let nextIdx: number;
+    if (direction === 'down') {
+      nextIdx = currentIdx < 0 ? 0 : Math.min(currentIdx + 1, todoIds.length - 1);
+    } else {
+      nextIdx = currentIdx < 0 ? 0 : Math.max(currentIdx - 1, 0);
+    }
+
+    if (nextIdx === currentIdx) return;
+
+    setUI(prev => ({ ...prev, selectedTodoId: todoIds[nextIdx] }));
+  }, [ui.selectedTodoId]);
 
   const value: AppContextValue = {
     // Selection
@@ -254,9 +294,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setReplyText,
     setSubmittingReply,
 
+    // Todo panel
+    selectedTodoId: ui.selectedTodoId,
+    setSelectedTodoId,
+    todoPanelVisible: ui.todoPanelVisible,
+    toggleTodoPanel,
+
     // Navigation
     navigateChanges,
     navigateThreads,
+    navigateTodos,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

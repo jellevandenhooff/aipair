@@ -3,6 +3,7 @@ mod jj;
 mod line_mapper;
 mod mcp;
 mod review;
+mod todo;
 mod topic;
 
 use anyhow::Result;

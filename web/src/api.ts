@@ -1,8 +1,8 @@
 // Import types from generated types
-import type { Change, Diff, Review, TopicsResponse, GraphRow } from './types';
+import type { Change, Diff, Review, TopicsResponse, GraphRow, TodoTree } from './types';
 
 // Re-export types for consumers
-export type { Change, Diff, FileDiff, Review, Thread, Comment, Author, ThreadStatus, Topic, TopicsResponse, GraphRow, NodeLine, PadLine } from './types';
+export type { Change, Diff, FileDiff, Review, Thread, Comment, Author, ThreadStatus, Topic, TopicsResponse, GraphRow, NodeLine, PadLine, TodoItem, TodoTree } from './types';
 
 const API_BASE = '/api';
 
@@ -158,4 +158,56 @@ export async function finishTopic(topicId: string, force = false): Promise<Merge
     throw new Error(`Failed to finish topic: ${res.statusText}`);
   }
   return data;
+}
+
+// Todo API functions
+
+export async function fetchTodos(): Promise<TodoTree> {
+  const res = await fetch(`${API_BASE}/todos`);
+  if (!res.ok) throw new Error(`Failed to fetch todos: ${res.statusText}`);
+  return res.json();
+}
+
+export async function createTodo(
+  text: string,
+  parentId?: string | null,
+  afterId?: string | null,
+): Promise<TodoTree> {
+  const res = await fetch(`${API_BASE}/todos`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      text,
+      parent_id: parentId ?? null,
+      after_id: afterId ?? null,
+    }),
+  });
+  if (!res.ok) throw new Error(`Failed to create todo: ${res.statusText}`);
+  return res.json();
+}
+
+export async function updateTodo(
+  id: string,
+  updates: {
+    text?: string;
+    checked?: boolean;
+    parent_id?: string | null;
+    after_id?: string | null;
+  },
+): Promise<TodoTree> {
+  const res = await fetch(`${API_BASE}/todos/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) throw new Error(`Failed to update todo: ${res.statusText}`);
+  return res.json();
+}
+
+export async function deleteTodo(id: string): Promise<TodoTree> {
+  const res = await fetch(`${API_BASE}/todos/${id}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(`Failed to delete todo: ${res.statusText}`);
+  return res.json();
 }

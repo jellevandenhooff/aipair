@@ -1,6 +1,7 @@
 import { Suspense, useEffect, useMemo } from 'react';
 import { ChangeList } from './components/ChangeList';
 import { SelectedChangeView } from './components/SelectedChangeView';
+import { TodoPanel } from './components/TodoPanel';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { useAppContext } from './context';
 import { useChanges } from './hooks';
@@ -75,7 +76,20 @@ function LoadingView({ message }: { message: string }) {
 }
 
 export default function App() {
-  const { setFocusedPanel, isSelectingChange } = useAppContext();
+  const { setFocusedPanel, isSelectingChange, todoPanelVisible, toggleTodoPanel } = useAppContext();
+
+  // Global backtick toggle for todo panel
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return;
+      if (e.key === '`') {
+        e.preventDefault();
+        toggleTodoPanel();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [toggleTodoPanel]);
 
   return (
     <ErrorBoundary>
@@ -108,6 +122,13 @@ export default function App() {
             <MainContent />
           </Suspense>
         </div>
+
+        {/* Todo panel (collapsible bottom panel) */}
+        {todoPanelVisible && (
+          <Suspense fallback={<LoadingView message="Loading todos..." />}>
+            <TodoPanel />
+          </Suspense>
+        )}
       </div>
     </ErrorBoundary>
   );
