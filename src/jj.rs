@@ -244,9 +244,23 @@ impl Jj {
 
     /// Get raw git diff between two commits for a specific file
     pub fn diff_raw_between(&self, from: &str, to: &str, file: &str) -> Result<String> {
+        self.diff_raw_between_ctx(from, to, file, None)
+    }
+
+    /// Get raw git diff between two commits for a specific file, with configurable context lines.
+    pub fn diff_raw_between_ctx(&self, from: &str, to: &str, file: &str, context: Option<usize>) -> Result<String> {
+        let ctx_flag;
+        let mut args = vec!["diff", "--from", from, "--to", to, "--git"];
+        if let Some(ctx) = context {
+            ctx_flag = format!("--context={}", ctx);
+            args.push(&ctx_flag);
+        }
+        args.push("--");
+        args.push(file);
+
         let output = Command::new("jj")
             .current_dir(&self.repo_path)
-            .args(["diff", "--from", from, "--to", to, "--git", "--", file])
+            .args(&args)
             .output()
             .context("Failed to run jj diff")?;
 
