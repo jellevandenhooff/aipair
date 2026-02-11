@@ -11,6 +11,7 @@ use std::borrow::Cow;
 
 use crate::jj::Jj;
 use crate::review::{Author, ReviewStore, ThreadStatus};
+use crate::timeline::TimelineStore;
 use crate::topic::{slugify, TopicStore};
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -109,6 +110,19 @@ impl ReviewService {
                 .map_err(|e| mcp_error(e.to_string()))?;
         }
 
+        // Emit timeline event
+        let timeline = TimelineStore::new(jj.repo_path());
+        let _ = timeline.append(&crate::timeline::TimelineEntry {
+            timestamp: chrono::Utc::now(),
+            topic_id: None,
+            data: crate::timeline::TimelineEventData::ReviewReply {
+                change_id: req.change_id.clone(),
+                thread_id: req.thread_id.clone(),
+                author: "claude".to_string(),
+                text: req.message.clone(),
+            },
+        });
+
         let status = if req.resolve { " and resolved" } else { "" };
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Responded to thread {}{}.",
@@ -147,6 +161,18 @@ impl ReviewService {
         let (_, revision_number) = store
             .record_revision(&change.change_id, &change.commit_id, Some(req.description.clone()))
             .map_err(|e| mcp_error(e.to_string()))?;
+
+        // Emit timeline event
+        let timeline = TimelineStore::new(jj.repo_path());
+        let _ = timeline.append(&crate::timeline::TimelineEntry {
+            timestamp: chrono::Utc::now(),
+            topic_id: None,
+            data: crate::timeline::TimelineEventData::CodeSnapshot {
+                change_id: change.change_id.clone(),
+                commit_id: change.commit_id.clone(),
+                description: req.description.clone(),
+            },
+        });
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Recorded revision {} for change {}. Summary: {}",

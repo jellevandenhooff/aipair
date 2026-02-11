@@ -3,6 +3,7 @@ mod jj;
 mod line_mapper;
 mod mcp;
 mod review;
+mod timeline;
 mod todo;
 mod topic;
 

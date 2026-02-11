@@ -16,6 +16,7 @@ use tracing::info;
 
 use crate::jj::Jj;
 use crate::review::{Author, Review, ReviewStore, ThreadStatus};
+use crate::timeline::TimelineStore;
 use crate::todo::TodoStore;
 use crate::topic::TopicStore;
 
@@ -61,6 +62,7 @@ struct AppState {
     store: ReviewStore,
     topics: TopicStore,
     todos: TodoStore,
+    timeline: TimelineStore,
 }
 
 pub async fn serve(port: u16) -> anyhow::Result<()> {
@@ -71,7 +73,8 @@ pub async fn serve(port: u16) -> anyhow::Result<()> {
     topics.init()?;
 
     let todos = TodoStore::new(jj.repo_path());
-    let state = Arc::new(AppState { jj, store, topics, todos });
+    let timeline = TimelineStore::new(jj.repo_path());
+    let state = Arc::new(AppState { jj, store, topics, todos, timeline });
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -99,6 +102,7 @@ pub async fn serve(port: u16) -> anyhow::Result<()> {
         .route("/api/todos", post(create_todo))
         .route("/api/todos/{id}", patch(update_todo))
         .route("/api/todos/{id}", delete(delete_todo))
+        .route("/api/timeline", get(get_timeline))
         .with_state(state)
         .merge(mcp_router);
 
@@ -490,7 +494,21 @@ async fn add_comment(
         &req.text,
         &commit_id,
     ) {
-        Ok((review, thread_id)) => Json(AddCommentResponse { review, thread_id }).into_response(),
+        Ok((review, thread_id)) => {
+            let _ = state.timeline.append(&crate::timeline::TimelineEntry {
+                timestamp: chrono::Utc::now(),
+                topic_id: None,
+                data: crate::timeline::TimelineEventData::ReviewComment {
+                    change_id: change_id.clone(),
+                    thread_id: thread_id.clone(),
+                    file: req.file.clone(),
+                    line_start: req.line_start,
+                    line_end: req.line_end,
+                    text: req.text.clone(),
+                },
+            });
+            Json(AddCommentResponse { review, thread_id }).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -506,7 +524,19 @@ async fn reply_to_thread(
     Json(req): Json<ReplyRequest>,
 ) -> impl IntoResponse {
     match state.store.reply_to_thread(&change_id, &thread_id, Author::User, &req.text) {
-        Ok(review) => Json(ReviewResponse { review: Some(review) }).into_response(),
+        Ok(review) => {
+            let _ = state.timeline.append(&crate::timeline::TimelineEntry {
+                timestamp: chrono::Utc::now(),
+                topic_id: None,
+                data: crate::timeline::TimelineEventData::ReviewReply {
+                    change_id: change_id.clone(),
+                    thread_id: thread_id.clone(),
+                    author: "user".to_string(),
+                    text: req.text.clone(),
+                },
+            });
+            Json(ReviewResponse { review: Some(review) }).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
@@ -976,6 +1006,45 @@ async fn delete_todo(
     }
 
     Json(tree).into_response()
+}
+
+// --- Timeline endpoint ---
+
+#[derive(Deserialize)]
+struct TimelineQuery {
+    since: Option<String>,
+    until: Option<String>,
+    change_id: Option<String>,
+    #[serde(rename = "type")]
+    event_type: Option<String>,
+}
+
+async fn get_timeline(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<TimelineQuery>,
+) -> impl IntoResponse {
+    // Auto-import new Claude Code session content
+    let repo_path = state.jj.repo_path().to_path_buf();
+    if let Err(e) = state.timeline.import_claude_sessions(&repo_path) {
+        tracing::warn!("Failed to import Claude sessions: {}", e);
+    }
+
+    let filter = crate::timeline::TimelineFilter {
+        since: query.since.as_deref().and_then(|s| s.parse().ok()),
+        until: query.until.as_deref().and_then(|s| s.parse().ok()),
+        change_id: query.change_id,
+        event_type: query.event_type,
+    };
+
+    let has_filter = filter.since.is_some()
+        || filter.until.is_some()
+        || filter.change_id.is_some()
+        || filter.event_type.is_some();
+
+    match state.timeline.read(if has_filter { Some(&filter) } else { None }) {
+        Ok(entries) => Json(entries).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 #[cfg(test)]

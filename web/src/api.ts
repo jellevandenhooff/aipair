@@ -211,3 +211,31 @@ export async function deleteTodo(id: string): Promise<TodoTree> {
   if (!res.ok) throw new Error(`Failed to delete todo: ${res.statusText}`);
   return res.json();
 }
+
+// Timeline API
+
+export interface TimelineEntry {
+  timestamp: string;
+  topic_id?: string;
+  type: 'ReviewComment' | 'ReviewReply' | 'ChatMessage' | 'CodeSnapshot';
+  // ReviewComment fields
+  change_id?: string;
+  thread_id?: string;
+  file?: string;
+  line_start?: number;
+  line_end?: number;
+  text?: string;
+  // ReviewReply fields
+  author?: string;
+  // ChatMessage fields
+  session_id?: string;
+  // CodeSnapshot fields
+  commit_id?: string;
+  description?: string;
+}
+
+export async function fetchTimeline(): Promise<TimelineEntry[]> {
+  const res = await fetch(`${API_BASE}/timeline`);
+  if (!res.ok) throw new Error(`Failed to fetch timeline: ${res.statusText}`);
+  return res.json();
+}

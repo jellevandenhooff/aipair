@@ -2,6 +2,7 @@ import { Suspense, useEffect, useMemo } from 'react';
 import { ChangeList } from './components/ChangeList';
 import { SelectedChangeView } from './components/SelectedChangeView';
 import { TodoPanel } from './components/TodoPanel';
+import { TimelineView } from './components/TimelineView';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { useAppContext } from './context';
 import { useChanges } from './hooks';
@@ -76,6 +77,7 @@ function LoadingView({ message }: { message: string }) {
 }
 
 export default function App() {
+  const isTimeline = window.location.pathname === '/timeline';
   const { setFocusedPanel, isSelectingChange, todoPanelVisible, toggleTodoPanel } = useAppContext();
 
   // Global backtick toggle for todo panel
@@ -90,6 +92,10 @@ export default function App() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [toggleTodoPanel]);
+
+  if (isTimeline) {
+    return <TimelineView />;
+  }
 
   return (
     <ErrorBoundary>
