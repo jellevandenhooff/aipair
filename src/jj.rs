@@ -386,6 +386,221 @@ impl Jj {
 
         Ok(())
     }
+
+    /// Clone a repo via jj git clone. Returns Jj for the new clone.
+    pub fn git_clone(source: &Path, dest: &Path) -> Result<Self> {
+        let output = Command::new("jj")
+            .args([
+                "git",
+                "clone",
+                &source.to_string_lossy(),
+                &dest.to_string_lossy(),
+            ])
+            .output()
+            .context("Failed to run jj git clone")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "jj git clone failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(Self::new(dest))
+    }
+
+    pub fn git_push_bookmark(&self, bookmark: &str, allow_new: bool) -> Result<String> {
+        let mut args = vec!["git", "push", "--bookmark", bookmark];
+        if allow_new {
+            args.push("--allow-new");
+        }
+
+        let output = Command::new("jj")
+            .current_dir(&self.repo_path)
+            .args(&args)
+            .output()
+            .context("Failed to run jj git push")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "jj git push failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(String::from_utf8(output.stdout)?)
+    }
+
+    pub fn git_fetch(&self) -> Result<String> {
+        let output = Command::new("jj")
+            .current_dir(&self.repo_path)
+            .args(["git", "fetch"])
+            .output()
+            .context("Failed to run jj git fetch")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "jj git fetch failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(String::from_utf8(output.stdout)?)
+    }
+
+    pub fn bookmark_create(&self, name: &str, revision: &str) -> Result<()> {
+        let output = Command::new("jj")
+            .current_dir(&self.repo_path)
+            .args(["bookmark", "create", name, "-r", revision])
+            .output()
+            .context("Failed to run jj bookmark create")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "jj bookmark create failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(())
+    }
+
+    pub fn bookmark_delete(&self, name: &str) -> Result<()> {
+        let output = Command::new("jj")
+            .current_dir(&self.repo_path)
+            .args(["bookmark", "delete", name])
+            .output()
+            .context("Failed to run jj bookmark delete")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "jj bookmark delete failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(())
+    }
+
+    pub fn new_change(&self, message: &str) -> Result<()> {
+        let output = Command::new("jj")
+            .current_dir(&self.repo_path)
+            .args(["new", "-m", message])
+            .output()
+            .context("Failed to run jj new")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "jj new failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(())
+    }
+
+    pub fn new_change_on(&self, revision: &str, message: &str) -> Result<()> {
+        let output = Command::new("jj")
+            .current_dir(&self.repo_path)
+            .args(["new", revision, "-m", message])
+            .output()
+            .context("Failed to run jj new")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "jj new failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(())
+    }
+
+    pub fn describe(&self, message: &str) -> Result<()> {
+        let output = Command::new("jj")
+            .current_dir(&self.repo_path)
+            .args(["describe", "-m", message])
+            .output()
+            .context("Failed to run jj describe")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "jj describe failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(())
+    }
+
+    pub fn rebase(&self, revision: &str, destination: &str) -> Result<String> {
+        let output = Command::new("jj")
+            .current_dir(&self.repo_path)
+            .args(["rebase", "-r", revision, "-d", destination])
+            .output()
+            .context("Failed to run jj rebase")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "jj rebase failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(String::from_utf8(output.stdout)?)
+    }
+
+    pub fn squash_into(&self, from: &str, into: &str) -> Result<()> {
+        let output = Command::new("jj")
+            .current_dir(&self.repo_path)
+            .args(["squash", "--from", from, "--into", into])
+            .output()
+            .context("Failed to run jj squash")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "jj squash failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(())
+    }
+
+    pub fn abandon(&self, revision: &str) -> Result<()> {
+        let output = Command::new("jj")
+            .current_dir(&self.repo_path)
+            .args(["abandon", revision])
+            .output()
+            .context("Failed to run jj abandon")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "jj abandon failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Get the working copy change ID
+    pub fn working_copy_change_id(&self) -> Result<String> {
+        let output = Command::new("jj")
+            .current_dir(&self.repo_path)
+            .args(["log", "--no-graph", "-r", "@", "-T", "change_id"])
+            .output()
+            .context("Failed to run jj log")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "jj log failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(String::from_utf8(output.stdout)?.trim().to_string())
+    }
 }
 
 #[cfg(test)]

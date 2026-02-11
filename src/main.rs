@@ -3,6 +3,7 @@ mod jj;
 mod line_mapper;
 mod mcp;
 mod review;
+mod session;
 mod timeline;
 mod todo;
 mod topic;
@@ -32,6 +33,30 @@ enum Commands {
         #[arg(short, long, default_value = "3000")]
         port: u16,
     },
+    /// Manage sessions
+    Session {
+        #[command(subcommand)]
+        command: SessionCommands,
+    },
+    /// Push changes to main repo (from session clone)
+    Push {
+        #[arg(short, long)]
+        message: String,
+    },
+    /// Pull latest from main repo (from session clone)
+    Pull,
+    /// Show session status
+    Status,
+}
+
+#[derive(Subcommand)]
+enum SessionCommands {
+    /// Create a new session (clone + setup)
+    New { name: String },
+    /// List all sessions
+    List,
+    /// Merge a session into main
+    Merge { name: String },
 }
 
 #[tokio::main]
@@ -51,6 +76,26 @@ async fn main() -> Result<()> {
         }
         Commands::Init { port } => {
             init(port)?;
+        }
+        Commands::Session { command } => match command {
+            SessionCommands::New { name } => {
+                session::session_new(&name)?;
+            }
+            SessionCommands::List => {
+                session::session_list()?;
+            }
+            SessionCommands::Merge { name } => {
+                session::session_merge(&name)?;
+            }
+        },
+        Commands::Push { message } => {
+            session::push(&message)?;
+        }
+        Commands::Pull => {
+            session::pull()?;
+        }
+        Commands::Status => {
+            session::status()?;
         }
     }
 
