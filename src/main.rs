@@ -29,10 +29,7 @@ enum Commands {
         port: Option<u16>,
     },
     /// Initialize aipair in the current directory
-    Init {
-        #[arg(short, long, default_value = "3000")]
-        port: u16,
-    },
+    Init,
     /// Manage sessions
     Session {
         #[command(subcommand)]
@@ -71,8 +68,6 @@ enum SessionCommands {
     List,
     /// Merge a session into main
     Merge { name: String },
-    /// Add aipair session workflow instructions to CLAUDE.md
-    SetupClaude,
 }
 
 #[tokio::main]
@@ -90,8 +85,8 @@ async fn main() -> Result<()> {
         Commands::Serve { port } => {
             api::serve(port).await?;
         }
-        Commands::Init { port } => {
-            init(port)?;
+        Commands::Init => {
+            init()?;
         }
         Commands::Session { command } => match command {
             SessionCommands::New { name } => {
@@ -102,9 +97,6 @@ async fn main() -> Result<()> {
             }
             SessionCommands::Merge { name } => {
                 session::session_merge(&name)?;
-            }
-            SessionCommands::SetupClaude => {
-                session::session_setup_claude()?;
             }
         },
         Commands::Push { message } => {
@@ -132,24 +124,8 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn init(port: u16) -> Result<()> {
-    let mcp_json = Path::new(".mcp.json");
-
-    if mcp_json.exists() {
-        println!("Warning: .mcp.json already exists, overwriting");
-    }
-
-    let config = serde_json::json!({
-        "mcpServers": {
-            "aipair": {
-                "type": "http",
-                "url": format!("http://localhost:{}/mcp", port)
-            }
-        }
-    });
-
-    fs::write(mcp_json, serde_json::to_string_pretty(&config)?)?;
-    println!("Created .mcp.json");
+fn init() -> Result<()> {
+    let jj = jj::Jj::discover()?;
 
     // Create .aipair directory
     let aipair_dir = Path::new(".aipair");
@@ -158,10 +134,89 @@ fn init(port: u16) -> Result<()> {
         println!("Created .aipair/");
     }
 
+    // Create 'main' bookmark if it doesn't exist
+    if jj.get_bookmark("main")?.is_none() {
+        jj.bookmark_create("main", "@")?;
+        println!("Created 'main' bookmark at current change");
+    }
+
+    // Add .aipair to .gitignore
+    setup_gitignore()?;
+
+    // Untrack .aipair if it's currently tracked
+    untrack_aipair();
+
+    // Add session workflow to CLAUDE.md
+    setup_claude_md()?;
+
     println!();
     println!("Initialization complete. Next steps:");
     println!("  1. Start the server: aipair serve");
-    println!("  2. Open the web UI at http://localhost:{}", port);
 
+    Ok(())
+}
+
+fn setup_gitignore() -> Result<()> {
+    let gitignore = Path::new(".gitignore");
+    if gitignore.exists() {
+        let content = fs::read_to_string(gitignore)?;
+        // Check if .aipair is already ignored (as a whole line)
+        if content.lines().any(|line| line.trim() == ".aipair" || line.trim() == ".aipair/") {
+            return Ok(());
+        }
+        let mut new_content = content;
+        if !new_content.ends_with('\n') {
+            new_content.push('\n');
+        }
+        new_content.push_str(".aipair\n");
+        fs::write(gitignore, new_content)?;
+    } else {
+        fs::write(gitignore, ".aipair\n")?;
+    }
+    println!("Added .aipair to .gitignore");
+    Ok(())
+}
+
+fn untrack_aipair() {
+    // Silently remove .aipair from git tracking if present
+    let _ = std::process::Command::new("git")
+        .args(["rm", "-r", "--cached", "--quiet", ".aipair"])
+        .output();
+}
+
+fn setup_claude_md() -> Result<()> {
+    let claude_md = Path::new("CLAUDE.md");
+
+    let section = r#"
+## Session Workflow (aipair)
+
+### Commands (run from session clone directory)
+- `aipair push -m "summary"` — push changes for review
+- `aipair pull` — pull latest main and rebase
+- `aipair feedback` — show pending review comments
+- `aipair respond <change-id> <thread-id> "message" [--resolve]` — reply to a review thread
+- `aipair status` — show session info
+
+### Workflow
+1. Make changes, then push: `aipair push -m "description"`
+2. Check for feedback: `aipair feedback`
+3. Address comments, respond: `aipair respond <change-id> <thread-id> "Fixed" --resolve`
+4. Push again: `aipair push -m "Address feedback"`
+5. Repeat until all threads resolved
+"#;
+
+    if claude_md.exists() {
+        let content = fs::read_to_string(claude_md)?;
+        if content.to_lowercase().contains("session workflow (aipair)") {
+            return Ok(());
+        }
+        let mut new_content = content;
+        new_content.push_str(section);
+        fs::write(claude_md, new_content)?;
+    } else {
+        fs::write(claude_md, format!("# Project Guidelines\n{section}"))?;
+    }
+
+    println!("Added session workflow instructions to CLAUDE.md");
     Ok(())
 }

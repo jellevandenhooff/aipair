@@ -113,11 +113,11 @@ pub enum SessionContext {
 }
 
 pub fn detect_context() -> Result<SessionContext> {
-    // Walk up from cwd looking for .aipair-session.json
+    // Walk up from cwd looking for .aipair/session.json
     let cwd = std::env::current_dir()?;
     let mut dir = cwd.as_path();
     loop {
-        let marker_path = dir.join(".aipair-session.json");
+        let marker_path = dir.join(".aipair/session.json");
         if marker_path.exists() {
             let json = fs::read_to_string(&marker_path)?;
             let marker: CloneMarker = serde_json::from_str(&json)?;
@@ -185,7 +185,9 @@ pub fn session_new(name: &str) -> Result<()> {
         main_repo: repo_path.to_string_lossy().to_string(),
         bookmark: bookmark.clone(),
     };
-    let marker_path = clone_path.join(".aipair-session.json");
+    let marker_dir = clone_path.join(".aipair");
+    fs::create_dir_all(&marker_dir)?;
+    let marker_path = marker_dir.join("session.json");
     fs::write(&marker_path, serde_json::to_string_pretty(&marker)?)?;
 
     // Save session metadata
@@ -512,42 +514,3 @@ pub fn respond(change_id: &str, thread_id: &str, message: &str, resolve: bool) -
     Ok(())
 }
 
-pub fn session_setup_claude() -> Result<()> {
-    let jj = Jj::discover()?;
-    let repo_path = jj.repo_path().to_path_buf();
-    let claude_md = repo_path.join("CLAUDE.md");
-
-    let section = r#"
-## Session Workflow (aipair)
-
-### Commands (run from session clone directory)
-- `aipair push -m "summary"` — push changes for review
-- `aipair pull` — pull latest main and rebase
-- `aipair feedback` — show pending review comments
-- `aipair respond <change-id> <thread-id> "message" [--resolve]` — reply to a review thread
-- `aipair status` — show session info
-
-### Workflow
-1. Make changes, then push: `aipair push -m "description"`
-2. Check for feedback: `aipair feedback`
-3. Address comments, respond: `aipair respond <change-id> <thread-id> "Fixed" --resolve`
-4. Push again: `aipair push -m "Address feedback"`
-5. Repeat until all threads resolved
-"#;
-
-    if claude_md.exists() {
-        let content = fs::read_to_string(&claude_md)?;
-        if content.to_lowercase().contains("session workflow (aipair)") {
-            println!("CLAUDE.md already contains session workflow instructions.");
-            return Ok(());
-        }
-        let mut new_content = content;
-        new_content.push_str(section);
-        fs::write(&claude_md, new_content)?;
-    } else {
-        fs::write(&claude_md, format!("# Project Guidelines\n{section}"))?;
-    }
-
-    println!("Added session workflow instructions to CLAUDE.md");
-    Ok(())
-}

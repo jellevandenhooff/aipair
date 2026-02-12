@@ -37,13 +37,15 @@ This keeps the fix in the original change rather than creating a separate "fix f
 
 `just dev /path/to/test-repo` starts everything needed for development:
 - `cargo watch` auto-rebuilds the binary on source changes
-- Vite dev server for frontend hot-reload (proxies API to port 3001)
-- `aipair serve --port 3001` in the test repo (auto-restarts when binary is rebuilt)
+- `aipair serve` in the test repo with auto-port (auto-restarts when binary is rebuilt)
+- Vite dev server for frontend hot-reload (proxies API to the auto-assigned port)
 - Adds `target/debug` to the test repo's PATH via `.envrc`
+
+Multiple dev servers can run simultaneously — each gets its own port.
 
 `just dev-teardown /path/to/test-repo` removes the `.envrc` changes.
 
 ### Server port conventions
 
 - **Auto-port** (no `--port` flag): tries `.aipair/port`, then OS-assigned. Writes port to `.aipair/port` for reuse.
-- **Explicit `--port 3001`**: used in dev to match the vite proxy config. Does not write port file.
+- **Explicit `--port N`**: uses that port exactly. Does not write port file.
