@@ -1,10 +1,12 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::jj::Jj;
+use crate::review::{Author, ReviewStore};
 
 // --- Data types ---
 
@@ -17,6 +19,8 @@ pub struct Session {
     pub status: SessionStatus,
     pub created_at: DateTime<Utc>,
     pub pushes: Vec<PushEvent>,
+    #[serde(default)]
+    pub changes: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -193,10 +197,16 @@ pub fn session_new(name: &str) -> Result<()> {
         status: SessionStatus::Active,
         created_at: Utc::now(),
         pushes: Vec::new(),
+        changes: Vec::new(),
     };
     store.save(&session)?;
 
-    // Ensure .aipair/sessions/ is gitignored (it's already covered by .aipair/ in .gitignore)
+    // Check for aipair mention in CLAUDE.md
+    let claude_md = repo_path.join("CLAUDE.md");
+    let has_aipair_mention = claude_md.exists()
+        && fs::read_to_string(&claude_md)
+            .map(|s| s.to_lowercase().contains("aipair"))
+            .unwrap_or(false);
 
     println!();
     println!("Session '{name}' created!");
@@ -207,6 +217,12 @@ pub fn session_new(name: &str) -> Result<()> {
     println!("  cd {clone_rel}");
     println!("  # make changes, then:");
     println!("  aipair push -m \"description of changes\"");
+
+    if !has_aipair_mention {
+        eprintln!();
+        eprintln!("Warning: No mention of 'aipair' found in CLAUDE.md");
+        eprintln!("  Run `aipair session setup-claude` to add workflow instructions.");
+    }
 
     Ok(())
 }
@@ -246,6 +262,10 @@ pub fn push(message: &str) -> Result<()> {
         commit_id: change.commit_id,
         timestamp: Utc::now(),
     });
+
+    // Record all session change_ids (from clone's perspective)
+    session.changes = jj.query_change_ids("main@origin..@")?;
+
     store.save(&session)?;
 
     println!("Pushed! Summary: {message}");
@@ -431,5 +451,103 @@ pub fn status() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+pub fn feedback() -> Result<()> {
+    let ctx = detect_context()?;
+    let (_jj, marker) = match ctx {
+        SessionContext::SessionClone { jj, marker } => (jj, marker),
+        SessionContext::MainRepo { .. } => {
+            anyhow::bail!("'feedback' must be run from a session clone, not the main repo");
+        }
+    };
+
+    let main_repo_path = PathBuf::from(&marker.main_repo);
+    let main_jj = Jj::new(&main_repo_path);
+    let store = ReviewStore::new(&main_repo_path);
+    let session_store = SessionStore::new(&main_repo_path);
+
+    let session = session_store
+        .get(&marker.session_name)?
+        .context("Session metadata not found in main repo")?;
+
+    let change_ids: HashSet<String> = session.changes.into_iter().collect();
+    if change_ids.is_empty() {
+        println!("No changes tracked yet. Push first with `aipair push -m \"...\"`");
+        return Ok(());
+    }
+
+    let reviews = store.list_with_open_threads(Some(&change_ids))?;
+    if reviews.is_empty() {
+        println!("No pending feedback.");
+        return Ok(());
+    }
+
+    let output = crate::mcp::format_pending_feedback(&main_jj, reviews);
+    print!("{output}");
+    Ok(())
+}
+
+pub fn respond(change_id: &str, thread_id: &str, message: &str, resolve: bool) -> Result<()> {
+    let ctx = detect_context()?;
+    let marker = match ctx {
+        SessionContext::SessionClone { marker, .. } => marker,
+        SessionContext::MainRepo { .. } => {
+            anyhow::bail!("'respond' must be run from a session clone, not the main repo");
+        }
+    };
+
+    let main_repo_path = PathBuf::from(&marker.main_repo);
+    let store = ReviewStore::new(&main_repo_path);
+
+    store.reply_to_thread(change_id, thread_id, Author::Claude, message)?;
+
+    if resolve {
+        store.resolve_thread(change_id, thread_id)?;
+    }
+
+    let status = if resolve { " and resolved" } else { "" };
+    println!("Responded to thread {}{status}.", &thread_id[..8.min(thread_id.len())]);
+    Ok(())
+}
+
+pub fn session_setup_claude() -> Result<()> {
+    let jj = Jj::discover()?;
+    let repo_path = jj.repo_path().to_path_buf();
+    let claude_md = repo_path.join("CLAUDE.md");
+
+    let section = r#"
+## Session Workflow (aipair)
+
+### Commands (run from session clone directory)
+- `aipair push -m "summary"` — push changes for review
+- `aipair pull` — pull latest main and rebase
+- `aipair feedback` — show pending review comments
+- `aipair respond <change-id> <thread-id> "message" [--resolve]` — reply to a review thread
+- `aipair status` — show session info
+
+### Workflow
+1. Make changes, then push: `aipair push -m "description"`
+2. Check for feedback: `aipair feedback`
+3. Address comments, respond: `aipair respond <change-id> <thread-id> "Fixed" --resolve`
+4. Push again: `aipair push -m "Address feedback"`
+5. Repeat until all threads resolved
+"#;
+
+    if claude_md.exists() {
+        let content = fs::read_to_string(&claude_md)?;
+        if content.to_lowercase().contains("session workflow (aipair)") {
+            println!("CLAUDE.md already contains session workflow instructions.");
+            return Ok(());
+        }
+        let mut new_content = content;
+        new_content.push_str(section);
+        fs::write(&claude_md, new_content)?;
+    } else {
+        fs::write(&claude_md, format!("# Project Guidelines\n{section}"))?;
+    }
+
+    println!("Added session workflow instructions to CLAUDE.md");
     Ok(())
 }

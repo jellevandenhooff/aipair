@@ -584,6 +584,36 @@ impl Jj {
         Ok(())
     }
 
+    /// Run a revset and return the matching change_ids.
+    pub fn query_change_ids(&self, revset: &str) -> Result<Vec<String>> {
+        let output = Command::new("jj")
+            .current_dir(&self.repo_path)
+            .args([
+                "log",
+                "--no-graph",
+                "-r",
+                revset,
+                "-T",
+                r#"change_id ++ "\n""#,
+            ])
+            .output()
+            .context("Failed to run jj log")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "jj log failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let stdout = String::from_utf8(output.stdout)?;
+        Ok(stdout
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| l.to_string())
+            .collect())
+    }
+
     /// Get the working copy change ID
     pub fn working_copy_change_id(&self) -> Result<String> {
         let output = Command::new("jj")

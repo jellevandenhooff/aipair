@@ -541,7 +541,7 @@ impl ServerHandler for ReviewService {
 
 /// Format pending feedback for a list of reviews with open threads.
 /// This is the core logic of get_pending_feedback, extracted for testability.
-fn format_pending_feedback(jj: &Jj, reviews: Vec<crate::review::Review>) -> String {
+pub(crate) fn format_pending_feedback(jj: &Jj, reviews: Vec<crate::review::Review>) -> String {
     let mut output = String::new();
 
     for mut review in reviews {

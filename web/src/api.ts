@@ -1,21 +1,22 @@
 // Import types from generated types
-import type { Change, Diff, Review, TopicsResponse, GraphRow, TodoTree } from './types';
+import type { Change, Diff, Review, TopicsResponse, GraphRow, TodoTree, SessionSummary } from './types';
 
 // Re-export types for consumers
-export type { Change, Diff, FileDiff, Review, Thread, Comment, Author, ThreadStatus, Topic, TopicsResponse, GraphRow, NodeLine, PadLine, TodoItem, TodoTree } from './types';
+export type { Change, Diff, FileDiff, Review, Thread, Comment, Author, ThreadStatus, Topic, TopicsResponse, GraphRow, NodeLine, PadLine, TodoItem, TodoTree, SessionSummary } from './types';
 
 const API_BASE = '/api';
 
 export interface ChangesData {
   changes: Change[];
   graph: GraphRow[];
+  sessions: SessionSummary[];
 }
 
 export async function fetchChanges(): Promise<ChangesData> {
   const res = await fetch(`${API_BASE}/changes`);
   if (!res.ok) throw new Error(`Failed to fetch changes: ${res.statusText}`);
   const data = await res.json();
-  return { changes: data.changes, graph: data.graph };
+  return { changes: data.changes, graph: data.graph, sessions: data.sessions ?? [] };
 }
 
 export interface DiffChunk {
@@ -210,6 +211,21 @@ export async function deleteTodo(id: string): Promise<TodoTree> {
   });
   if (!res.ok) throw new Error(`Failed to delete todo: ${res.statusText}`);
   return res.json();
+}
+
+// Session API
+
+export async function mergeSession(name: string): Promise<MergeResult> {
+  const res = await fetch(`${API_BASE}/sessions/${name}/merge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  const data = await res.json();
+  if (!res.ok && !data.message) {
+    throw new Error(`Failed to merge session: ${res.statusText}`);
+  }
+  return data;
 }
 
 // Timeline API

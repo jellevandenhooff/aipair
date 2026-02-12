@@ -3,7 +3,7 @@ import { flushSync } from 'react-dom';
 import type { Change } from './api';
 import type { Revision } from './types';
 
-type FocusedPanel = 'changes' | 'revisions' | 'diff' | 'threads' | 'todos';
+type FocusedPanel = 'changes' | 'revisions' | 'diff' | 'threads' | 'todos' | 'sessions';
 
 // Selection state - triggers data fetching, needs transitions
 interface SelectionState {
@@ -18,6 +18,7 @@ interface UIState {
   selectedThreadId: string | null;
   selectedTodoId: string | null;
   todoPanelVisible: boolean;
+  sessionsPanelVisible: boolean;
   newCommentText: string;
   replyingToThread: boolean;
   replyText: string;
@@ -57,6 +58,10 @@ interface AppContextValue {
   todoPanelVisible: boolean;
   toggleTodoPanel: () => void;
 
+  // Sessions panel
+  sessionsPanelVisible: boolean;
+  toggleSessionsPanel: () => void;
+
   // Navigation helpers
   navigateChanges: (direction: 'up' | 'down', changes: Change[], selectFn?: (id: string) => void) => void;
   navigateThreads: (direction: 'up' | 'down', threadIds: string[]) => void;
@@ -80,6 +85,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     selectedThreadId: null,
     selectedTodoId: null,
     todoPanelVisible: false,
+    sessionsPanelVisible: false,
     newCommentText: '',
     replyingToThread: false,
     replyText: '',
@@ -145,25 +151,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const cyclePanel = useCallback((reverse: boolean, hasThreads: boolean) => {
-    // Order: changes → diff → revisions → threads → todos → changes
+    // Order: changes → diff → revisions → threads → todos → sessions → changes
     setUI(prev => {
-      const { focusedPanel, todoPanelVisible } = prev;
+      const { focusedPanel, todoPanelVisible, sessionsPanelVisible } = prev;
       let next: FocusedPanel;
 
       if (reverse) {
-        // Reverse: changes → todos → threads → revisions → diff → changes
-        if (focusedPanel === 'changes') next = todoPanelVisible ? 'todos' : (hasThreads ? 'threads' : 'revisions');
+        // Reverse: changes → sessions → todos → threads → revisions → diff → changes
+        if (focusedPanel === 'changes') next = sessionsPanelVisible ? 'sessions' : (todoPanelVisible ? 'todos' : (hasThreads ? 'threads' : 'revisions'));
+        else if (focusedPanel === 'sessions') next = todoPanelVisible ? 'todos' : (hasThreads ? 'threads' : 'revisions');
         else if (focusedPanel === 'todos') next = hasThreads ? 'threads' : 'revisions';
         else if (focusedPanel === 'threads') next = 'revisions';
         else if (focusedPanel === 'revisions') next = 'diff';
         else next = 'changes'; // diff → changes
       } else {
-        // Forward: changes → diff → revisions → threads → todos → changes
+        // Forward: changes → diff → revisions → threads → todos → sessions → changes
         if (focusedPanel === 'changes') next = 'diff';
         else if (focusedPanel === 'diff') next = 'revisions';
-        else if (focusedPanel === 'revisions') next = hasThreads ? 'threads' : (todoPanelVisible ? 'todos' : 'changes');
-        else if (focusedPanel === 'threads') next = todoPanelVisible ? 'todos' : 'changes';
-        else next = 'changes'; // todos → changes
+        else if (focusedPanel === 'revisions') next = hasThreads ? 'threads' : (todoPanelVisible ? 'todos' : (sessionsPanelVisible ? 'sessions' : 'changes'));
+        else if (focusedPanel === 'threads') next = todoPanelVisible ? 'todos' : (sessionsPanelVisible ? 'sessions' : 'changes');
+        else if (focusedPanel === 'todos') next = sessionsPanelVisible ? 'sessions' : 'changes';
+        else next = 'changes'; // sessions → changes
       }
 
       return { ...prev, focusedPanel: next };
@@ -207,6 +215,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ...prev,
       todoPanelVisible: !prev.todoPanelVisible,
       focusedPanel: !prev.todoPanelVisible ? 'todos' : (prev.focusedPanel === 'todos' ? 'changes' : prev.focusedPanel),
+    }));
+  }, []);
+
+  const toggleSessionsPanel = useCallback(() => {
+    setUI(prev => ({
+      ...prev,
+      sessionsPanelVisible: !prev.sessionsPanelVisible,
+      focusedPanel: !prev.sessionsPanelVisible ? 'sessions' : (prev.focusedPanel === 'sessions' ? 'changes' : prev.focusedPanel),
     }));
   }, []);
 
@@ -299,6 +315,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setSelectedTodoId,
     todoPanelVisible: ui.todoPanelVisible,
     toggleTodoPanel,
+
+    // Sessions panel
+    sessionsPanelVisible: ui.sessionsPanelVisible,
+    toggleSessionsPanel,
 
     // Navigation
     navigateChanges,

@@ -47,6 +47,20 @@ enum Commands {
     Pull,
     /// Show session status
     Status,
+    /// Show pending review feedback (run from session clone)
+    Feedback,
+    /// Respond to a review thread (run from session clone)
+    Respond {
+        /// Change ID (prefix ok) containing the thread
+        change_id: String,
+        /// Thread ID (prefix ok) to respond to
+        thread_id: String,
+        /// Your response message
+        message: String,
+        /// Resolve the thread after responding
+        #[arg(long)]
+        resolve: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -57,6 +71,8 @@ enum SessionCommands {
     List,
     /// Merge a session into main
     Merge { name: String },
+    /// Add aipair session workflow instructions to CLAUDE.md
+    SetupClaude,
 }
 
 #[tokio::main]
@@ -87,6 +103,9 @@ async fn main() -> Result<()> {
             SessionCommands::Merge { name } => {
                 session::session_merge(&name)?;
             }
+            SessionCommands::SetupClaude => {
+                session::session_setup_claude()?;
+            }
         },
         Commands::Push { message } => {
             session::push(&message)?;
@@ -96,6 +115,17 @@ async fn main() -> Result<()> {
         }
         Commands::Status => {
             session::status()?;
+        }
+        Commands::Feedback => {
+            session::feedback()?;
+        }
+        Commands::Respond {
+            change_id,
+            thread_id,
+            message,
+            resolve,
+        } => {
+            session::respond(&change_id, &thread_id, &message, resolve)?;
         }
     }
 

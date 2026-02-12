@@ -24,6 +24,14 @@ export interface Change extends BaseChange {
   revision_count: number;
   has_pending_changes: boolean;
   topic_id?: string;
+  session_name?: string;
+}
+
+export interface SessionSummary {
+  name: string;
+  status: string;
+  push_count: number;
+  last_push?: string;
 }
 
 // DAG graph types (from sapling-renderdag via API)

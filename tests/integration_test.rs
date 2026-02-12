@@ -398,6 +398,31 @@ fn jj_cmd(dir: &Path, args: &[&str]) -> String {
     format!("{}{}", stdout, stderr)
 }
 
+/// Start a server in a directory, returning the child process and base URL
+async fn start_server(dir: &Path) -> (Child, String) {
+    let port = portpicker::pick_unused_port().expect("No free port");
+    let base_url = format!("http://localhost:{}", port);
+
+    let server = Command::new(aipair_binary())
+        .args(["serve", "--port", &port.to_string()])
+        .current_dir(dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("Failed to start server");
+
+    // Wait for server to be ready
+    let client = Client::new();
+    for _ in 0..50 {
+        if client.get(&format!("{}/api/health", base_url)).send().await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    (server, base_url)
+}
+
 #[test]
 fn test_session_lifecycle() {
     let temp_dir = TempDir::new().unwrap();
@@ -475,4 +500,189 @@ fn test_session_lifecycle() {
         "status after merge: {}",
         out
     );
+}
+
+#[tokio::test]
+async fn test_session_feedback_respond() {
+    let temp_dir = TempDir::new().unwrap();
+    let main_dir = temp_dir.path().join("main");
+    std::fs::create_dir(&main_dir).unwrap();
+
+    // Setup main repo
+    jj_cmd(&main_dir, &["git", "init", "--colocate"]);
+    std::fs::write(main_dir.join(".gitignore"), ".aipair/\n").unwrap();
+    std::fs::write(main_dir.join("test.txt"), "hello\nworld\n").unwrap();
+    jj_cmd(&main_dir, &["describe", "-m", "Initial commit"]);
+    jj_cmd(&main_dir, &["bookmark", "create", "main", "-r", "@"]);
+    jj_cmd(&main_dir, &["new", "-m", "wc"]);
+
+    // Create session + push
+    aipair_ok(&main_dir, &["session", "new", "test-session"]);
+    let clone_dir = main_dir.join(".aipair/sessions/test-session/repo");
+    std::fs::write(clone_dir.join("feature.txt"), "new feature\n").unwrap();
+    jj_cmd(&clone_dir, &["describe", "-m", "Add feature"]);
+    aipair_ok(&clone_dir, &["push", "-m", "Feature push"]);
+
+    // Start server in main repo to create reviews via API
+    let (mut server, base_url) = start_server(&main_dir).await;
+    let client = Client::new();
+
+    // Get changes to find the session change_id
+    let resp = client
+        .get(&format!("{}/api/changes", base_url))
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let changes = body["changes"].as_array().unwrap();
+    // Find the session change (has session_name)
+    let session_change = changes
+        .iter()
+        .find(|c| c["session_name"].as_str() == Some("test-session"))
+        .expect("Should find session change");
+    let change_id = session_change["change_id"].as_str().unwrap().to_string();
+
+    // Create a review and add a comment via API
+    client
+        .post(&format!("{}/api/changes/{}/review", base_url, change_id))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .post(&format!("{}/api/changes/{}/comments", base_url, change_id))
+        .json(&serde_json::json!({
+            "file": "feature.txt",
+            "line_start": 1,
+            "line_end": 1,
+            "text": "Please add tests for this"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let comment_body: serde_json::Value = resp.json().await.unwrap();
+    let thread_id = comment_body["thread_id"].as_str().unwrap().to_string();
+
+    // Kill server before running CLI commands (to avoid locking)
+    let _ = server.kill();
+    let _ = server.wait();
+
+    // `aipair feedback` from clone → should show the comment
+    let out = aipair_ok(&clone_dir, &["feedback"]);
+    assert!(
+        out.contains("Please add tests for this"),
+        "feedback should contain comment text: {}",
+        out
+    );
+
+    // `aipair respond` from clone with --resolve
+    let out = aipair_ok(
+        &clone_dir,
+        &[
+            "respond",
+            &change_id[..8],
+            &thread_id[..8],
+            "Added tests",
+            "--resolve",
+        ],
+    );
+    assert!(
+        out.contains("Responded") && out.contains("resolved"),
+        "respond output: {}",
+        out
+    );
+
+    // `aipair feedback` again → should show no pending feedback
+    let out = aipair_ok(&clone_dir, &["feedback"]);
+    assert!(
+        out.contains("No pending feedback"),
+        "feedback after resolve: {}",
+        out
+    );
+}
+
+#[tokio::test]
+async fn test_session_api() {
+    let temp_dir = TempDir::new().unwrap();
+    let main_dir = temp_dir.path().join("main");
+    std::fs::create_dir(&main_dir).unwrap();
+
+    // Setup main repo
+    jj_cmd(&main_dir, &["git", "init", "--colocate"]);
+    std::fs::write(main_dir.join(".gitignore"), ".aipair/\n").unwrap();
+    std::fs::write(main_dir.join("test.txt"), "hello\n").unwrap();
+    jj_cmd(&main_dir, &["describe", "-m", "Initial commit"]);
+    jj_cmd(&main_dir, &["bookmark", "create", "main", "-r", "@"]);
+    jj_cmd(&main_dir, &["new", "-m", "wc"]);
+
+    // Create session + push
+    aipair_ok(&main_dir, &["session", "new", "api-session"]);
+    let clone_dir = main_dir.join(".aipair/sessions/api-session/repo");
+    std::fs::write(clone_dir.join("api-file.txt"), "api feature\n").unwrap();
+    jj_cmd(&clone_dir, &["describe", "-m", "API feature"]);
+    aipair_ok(&clone_dir, &["push", "-m", "API push"]);
+
+    // Start server
+    let (mut server, base_url) = start_server(&main_dir).await;
+    let client = Client::new();
+
+    // GET /api/changes → verify session_name on session changes
+    let resp = client
+        .get(&format!("{}/api/changes", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+
+    // Check session_name appears on changes
+    let changes = body["changes"].as_array().unwrap();
+    let session_changes: Vec<_> = changes
+        .iter()
+        .filter(|c| c["session_name"].as_str() == Some("api-session"))
+        .collect();
+    assert!(
+        !session_changes.is_empty(),
+        "Should have changes with session_name. Changes: {:?}",
+        changes
+    );
+
+    // Check sessions array in response
+    let sessions = body["sessions"].as_array().unwrap();
+    assert!(!sessions.is_empty(), "Should have sessions in response");
+    let session = sessions
+        .iter()
+        .find(|s| s["name"].as_str() == Some("api-session"))
+        .expect("Should find api-session");
+    assert_eq!(session["status"], "active");
+    assert_eq!(session["push_count"], 1);
+
+    // POST /api/sessions/api-session/merge
+    let resp = client
+        .post(&format!("{}/api/sessions/api-session/merge", base_url))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["success"], true, "Merge should succeed: {:?}", body);
+
+    // GET /api/changes → session should now be merged
+    let resp = client
+        .get(&format!("{}/api/changes", base_url))
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let sessions = body["sessions"].as_array().unwrap();
+    let session = sessions
+        .iter()
+        .find(|s| s["name"].as_str() == Some("api-session"))
+        .expect("Should find api-session");
+    assert_eq!(session["status"], "merged");
+
+    let _ = server.kill();
 }

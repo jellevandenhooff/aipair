@@ -16,6 +16,7 @@ use tracing::info;
 
 use crate::jj::Jj;
 use crate::review::{Author, Review, ReviewStore, ThreadStatus};
+use crate::session::{SessionStatus, SessionStore};
 use crate::timeline::TimelineStore;
 use crate::todo::TodoStore;
 use crate::topic::TopicStore;
@@ -63,6 +64,7 @@ struct AppState {
     topics: TopicStore,
     todos: TodoStore,
     timeline: TimelineStore,
+    sessions: SessionStore,
 }
 
 pub async fn serve(port: u16) -> anyhow::Result<()> {
@@ -74,7 +76,8 @@ pub async fn serve(port: u16) -> anyhow::Result<()> {
 
     let todos = TodoStore::new(jj.repo_path());
     let timeline = TimelineStore::new(jj.repo_path());
-    let state = Arc::new(AppState { jj, store, topics, todos, timeline });
+    let sessions = SessionStore::new(jj.repo_path());
+    let state = Arc::new(AppState { jj, store, topics, todos, timeline, sessions });
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -103,6 +106,7 @@ pub async fn serve(port: u16) -> anyhow::Result<()> {
         .route("/api/todos/{id}", patch(update_todo))
         .route("/api/todos/{id}", delete(delete_todo))
         .route("/api/timeline", get(get_timeline))
+        .route("/api/sessions/{name}/merge", post(merge_session))
         .with_state(state)
         .merge(mcp_router);
 
@@ -142,6 +146,8 @@ struct ChangeWithStatus {
     has_pending_changes: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     topic_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_name: Option<String>,
 }
 
 /// Serializable graph row for the DAG visualization.
@@ -173,10 +179,19 @@ impl DagRow {
 }
 
 #[derive(Serialize)]
+struct SessionSummary {
+    name: String,
+    status: String,
+    push_count: usize,
+    last_push: Option<String>,
+}
+
+#[derive(Serialize)]
 struct ChangesResponse {
     changes: Vec<ChangeWithStatus>,
     main_change_id: Option<String>,
     graph: Vec<DagRow>,
+    sessions: Vec<SessionSummary>,
 }
 
 async fn list_changes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -202,6 +217,26 @@ async fn list_changes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let change_to_topic: std::collections::HashMap<String, String> = topics
         .iter()
         .flat_map(|t| t.changes.iter().map(move |c| (c.clone(), t.id.clone())))
+        .collect();
+
+    // Load sessions to map changes to session names
+    let all_sessions = state.sessions.list().unwrap_or_default();
+    let change_to_session: std::collections::HashMap<String, String> = all_sessions
+        .iter()
+        .filter(|s| s.status == SessionStatus::Active)
+        .flat_map(|s| s.changes.iter().map(move |c| (c.clone(), s.name.clone())))
+        .collect();
+    let session_summaries: Vec<SessionSummary> = all_sessions
+        .iter()
+        .map(|s| SessionSummary {
+            name: s.name.clone(),
+            status: match s.status {
+                SessionStatus::Active => "active".to_string(),
+                SessionStatus::Merged => "merged".to_string(),
+            },
+            push_count: s.pushes.len(),
+            last_push: s.pushes.last().map(|p| p.summary.clone()),
+        })
         .collect();
 
     // A change is merged if it appears at or after the main bookmark in the ancestor list
@@ -261,6 +296,7 @@ async fn list_changes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 })
                 .unwrap_or(false);
             let topic_id = change_to_topic.get(&change.change_id).cloned();
+            let session_name = change_to_session.get(&change.change_id).cloned();
             ChangeWithStatus {
                 change,
                 merged,
@@ -268,6 +304,7 @@ async fn list_changes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 revision_count,
                 has_pending_changes,
                 topic_id,
+                session_name,
             }
         })
         .collect();
@@ -276,6 +313,7 @@ async fn list_changes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         changes: changes_with_status,
         main_change_id,
         graph,
+        sessions: session_summaries,
     })
     .into_response()
 }
@@ -1045,6 +1083,73 @@ async fn get_timeline(
         Ok(entries) => Json(entries).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
+}
+
+// --- Session endpoints ---
+
+async fn merge_session(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    let mut session = match state.sessions.get(&name) {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            return Json(MergeResponse {
+                success: false,
+                message: format!("Session '{name}' not found"),
+            })
+            .into_response()
+        }
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    if session.status != SessionStatus::Active {
+        return Json(MergeResponse {
+            success: false,
+            message: format!("Session '{name}' is not active"),
+        })
+        .into_response();
+    }
+
+    // Fetch to get latest from clone's pushes
+    let _ = state.jj.git_fetch();
+
+    // Find session bookmark tip
+    let bookmark = &session.bookmark;
+    let session_tip = match state.jj.get_bookmark(bookmark) {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            return Json(MergeResponse {
+                success: false,
+                message: format!("Bookmark '{bookmark}' not found — was it pushed?"),
+            })
+            .into_response()
+        }
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    // Move main bookmark to session tip
+    if let Err(e) = state.jj.move_bookmark("main", &session_tip) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+
+    // Delete session bookmark
+    let _ = state.jj.bookmark_delete(bookmark);
+
+    // Update status
+    session.status = SessionStatus::Merged;
+    if let Err(e) = state.sessions.save(&session) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+
+    Json(MergeResponse {
+        success: true,
+        message: format!(
+            "Session '{name}' merged into main at {}",
+            &session_tip[..12.min(session_tip.len())]
+        ),
+    })
+    .into_response()
 }
 
 #[cfg(test)]

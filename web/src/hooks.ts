@@ -13,12 +13,14 @@ import {
   resolveThread as apiResolveThread,
   reopenThread as apiReopenThread,
   mergeChange as apiMergeChange,
+  mergeSession as apiMergeSession,
   type Change,
   type ChangesData,
   type DiffResponse,
   type Review,
   type TopicsResponse,
   type TodoTree,
+  type SessionSummary,
 } from './api';
 
 // Hook for fetching changes list with DAG graph (suspense mode - always returns data)
@@ -149,5 +151,14 @@ export async function removeTodo(id: string) {
   return tree;
 }
 
+// Session mutation helpers
+export async function mergeSessionAction(name: string) {
+  const result = await apiMergeSession(name);
+  if (result.success) {
+    mutate('changes');
+  }
+  return result;
+}
+
 // Re-export types for convenience
-export type { Change, ChangesData, DiffResponse, Review, TopicsResponse, TodoTree };
+export type { Change, ChangesData, DiffResponse, Review, TopicsResponse, TodoTree, SessionSummary };

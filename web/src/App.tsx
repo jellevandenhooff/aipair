@@ -2,6 +2,7 @@ import { Suspense, useEffect, useMemo } from 'react';
 import { ChangeList } from './components/ChangeList';
 import { SelectedChangeView } from './components/SelectedChangeView';
 import { TodoPanel } from './components/TodoPanel';
+import { SessionsPanel } from './components/SessionsPanel';
 import { TimelineView } from './components/TimelineView';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { useAppContext } from './context';
@@ -78,20 +79,23 @@ function LoadingView({ message }: { message: string }) {
 
 export default function App() {
   const isTimeline = window.location.pathname === '/timeline';
-  const { setFocusedPanel, isSelectingChange, todoPanelVisible, toggleTodoPanel } = useAppContext();
+  const { setFocusedPanel, isSelectingChange, todoPanelVisible, toggleTodoPanel, sessionsPanelVisible, toggleSessionsPanel } = useAppContext();
 
-  // Global backtick toggle for todo panel
+  // Global backtick toggle for todo panel, ~ for sessions panel
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return;
       if (e.key === '`') {
         e.preventDefault();
         toggleTodoPanel();
+      } else if (e.key === '~') {
+        e.preventDefault();
+        toggleSessionsPanel();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [toggleTodoPanel]);
+  }, [toggleTodoPanel, toggleSessionsPanel]);
 
   if (isTimeline) {
     return <TimelineView />;
@@ -133,6 +137,13 @@ export default function App() {
         {todoPanelVisible && (
           <Suspense fallback={<LoadingView message="Loading todos..." />}>
             <TodoPanel />
+          </Suspense>
+        )}
+
+        {/* Sessions panel (collapsible bottom panel) */}
+        {sessionsPanelVisible && (
+          <Suspense fallback={<LoadingView message="Loading sessions..." />}>
+            <SessionsPanel />
           </Suspense>
         )}
       </div>

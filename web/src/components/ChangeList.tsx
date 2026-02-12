@@ -64,6 +64,11 @@ const ChangeItem = forwardRef<HTMLButtonElement, ChangeItemProps>(function Chang
         {topicSlug && topicColor && (
           <span className="text-xs font-medium" style={{ color: topicColor }}>{topicSlug}</span>
         )}
+        {change.session_name && (
+          <span className="text-xs bg-indigo-100 text-indigo-700 px-1 py-0.5 rounded leading-none">
+            {change.session_name}
+          </span>
+        )}
         {isMain && (
           <span className="text-xs bg-green-100 text-green-700 px-1 py-0.5 rounded font-medium leading-none">
             main
