@@ -8,13 +8,13 @@ default:
 setup:
     cd web && npm install
 
-# Run the backend server
-dev-backend:
-    cargo run -- serve
+# Start full dev environment against a test repo
+dev REPO:
+    ./scripts/dev-watch.sh {{REPO}}
 
-# Run the frontend dev server (hot reload built-in)
-dev-frontend:
-    cd web && npm run dev
+# Clean up .envrc changes in a test repo
+dev-teardown REPO:
+    ./scripts/dev-teardown.sh {{REPO}}
 
 # Run all tests
 test:
@@ -63,6 +63,7 @@ lint:
 # Install aipair binary to ~/.local/bin
 install: build
     mkdir -p ~/.local/bin
+    rm -f ~/.local/bin/aipair
     cp target/release/aipair ~/.local/bin/
 
 # Clean build artifacts

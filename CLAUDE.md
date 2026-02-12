@@ -30,3 +30,20 @@ When fixing review feedback, use `jj edit` to directly edit the change being rev
 3. `jj edit <original-change>` - return to where you were working
 
 This keeps the fix in the original change rather than creating a separate "fix feedback" commit.
+
+## Development
+
+### Dev workflow
+
+`just dev /path/to/test-repo` starts everything needed for development:
+- `cargo watch` auto-rebuilds the binary on source changes
+- Vite dev server for frontend hot-reload (proxies API to port 3001)
+- `aipair serve --port 3001` in the test repo (auto-restarts when binary is rebuilt)
+- Adds `target/debug` to the test repo's PATH via `.envrc`
+
+`just dev-teardown /path/to/test-repo` removes the `.envrc` changes.
+
+### Server port conventions
+
+- **Auto-port** (no `--port` flag): tries `.aipair/port`, then OS-assigned. Writes port to `.aipair/port` for reuse.
+- **Explicit `--port 3001`**: used in dev to match the vite proxy config. Does not write port file.
