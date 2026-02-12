@@ -25,8 +25,8 @@ struct Cli {
 enum Commands {
     /// Start the web server (includes MCP endpoint at /mcp)
     Serve {
-        #[arg(short, long, default_value = "3000")]
-        port: u16,
+        #[arg(short, long)]
+        port: Option<u16>,
     },
     /// Initialize aipair in the current directory
     Init {

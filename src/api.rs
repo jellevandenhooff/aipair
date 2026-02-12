@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::jj::Jj;
 use crate::review::{Author, Review, ReviewStore, ThreadStatus};
@@ -67,7 +67,24 @@ struct AppState {
     sessions: SessionStore,
 }
 
-pub async fn serve(port: u16) -> anyhow::Result<()> {
+/// Resolve the port to bind to:
+/// 1. If explicit port given, use it
+/// 2. Else try .aipair/port file
+/// 3. Fall back to port 0 (OS assigns)
+fn resolve_port(explicit: Option<u16>) -> u16 {
+    if let Some(p) = explicit {
+        return p;
+    }
+    let port_file = std::path::Path::new(".aipair/port");
+    if let Ok(contents) = std::fs::read_to_string(port_file) {
+        if let Ok(p) = contents.trim().parse::<u16>() {
+            return p;
+        }
+    }
+    0
+}
+
+pub async fn serve(port: Option<u16>) -> anyhow::Result<()> {
     let jj = Jj::discover()?;
     let store = ReviewStore::new(jj.repo_path());
     store.init()?;
@@ -116,16 +133,29 @@ pub async fn serve(port: u16) -> anyhow::Result<()> {
 
     let app = app.layer(cors).layer(TraceLayer::new_for_http());
 
-    let addr = format!("0.0.0.0:{}", port);
-    info!("Starting server on http://localhost:{}", port);
-    info!("MCP endpoint available at http://localhost:{}/mcp", port);
+    let is_auto = port.is_none();
+    let bind_port = resolve_port(port);
+    let addr = format!("0.0.0.0:{}", bind_port);
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let actual_port = listener.local_addr()?.port();
+
+    // Write port file only when auto-allocated (not explicit --port)
+    if is_auto {
+        let port_dir = std::path::Path::new(".aipair");
+        if !port_dir.exists() {
+            std::fs::create_dir_all(port_dir)?;
+        }
+        std::fs::write(port_dir.join("port"), actual_port.to_string())?;
+    }
+
+    info!("Starting server on http://localhost:{}", actual_port);
+    info!("MCP endpoint available at http://localhost:{}/mcp", actual_port);
 
     #[cfg(feature = "bundled-frontend")]
-    info!("Web UI available at http://localhost:{}", port);
+    info!("Web UI available at http://localhost:{}", actual_port);
     #[cfg(not(feature = "bundled-frontend"))]
     info!("Web UI not bundled - run 'npm run dev' in web/ for development");
 
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
 
     Ok(())
