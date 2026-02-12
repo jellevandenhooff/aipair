@@ -4,7 +4,8 @@
 //! and verify the full flow works end-to-end.
 
 use reqwest::Client;
-use std::process::{Child, Command, Stdio};
+use std::path::Path;
+use std::process::{Child, Command, Output, Stdio};
 use std::time::Duration;
 use tempfile::TempDir;
 
@@ -353,4 +354,125 @@ async fn test_thread_relocation_after_edit() {
     assert_eq!(thread["is_deleted"], true, "thread should be marked deleted after its line was removed");
 
     let _ = server.kill();
+}
+
+// --- Session lifecycle helpers (no server needed) ---
+
+fn aipair_binary() -> String {
+    format!("{}/target/debug/aipair", env!("CARGO_MANIFEST_DIR"))
+}
+
+fn aipair(dir: &Path, args: &[&str]) -> Output {
+    Command::new(aipair_binary())
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("Failed to run aipair")
+}
+
+fn aipair_ok(dir: &Path, args: &[&str]) -> String {
+    let output = aipair(dir, args);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        output.status.success(),
+        "aipair {:?} failed:\nstdout: {}\nstderr: {}",
+        args, stdout, stderr
+    );
+    format!("{}{}", stdout, stderr)
+}
+
+fn jj_cmd(dir: &Path, args: &[&str]) -> String {
+    let output = Command::new("jj")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("Failed to run jj");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        output.status.success(),
+        "jj {:?} failed:\nstdout: {}\nstderr: {}",
+        args, stdout, stderr
+    );
+    format!("{}{}", stdout, stderr)
+}
+
+#[test]
+fn test_session_lifecycle() {
+    let temp_dir = TempDir::new().unwrap();
+    let main_dir = temp_dir.path().join("main");
+    std::fs::create_dir(&main_dir).unwrap();
+
+    // 1. Setup temp jj repo
+    jj_cmd(&main_dir, &["git", "init", "--colocate"]);
+    std::fs::write(main_dir.join(".gitignore"), ".aipair/\n").unwrap();
+    std::fs::write(main_dir.join("test.txt"), "hello\n").unwrap();
+    jj_cmd(&main_dir, &["describe", "-m", "Initial commit"]);
+    jj_cmd(&main_dir, &["bookmark", "create", "main", "-r", "@"]);
+    jj_cmd(&main_dir, &["new", "-m", "wc"]);
+
+    // 2. session new — creates clone + marker
+    let out = aipair_ok(&main_dir, &["session", "new", "test-session"]);
+    assert!(
+        out.contains("Session 'test-session' created!"),
+        "Expected creation message, got: {}",
+        out
+    );
+    let clone_dir = main_dir.join(".aipair/sessions/test-session/repo");
+    assert!(clone_dir.exists(), "Clone directory should exist");
+    assert!(
+        clone_dir.join(".aipair-session.json").exists(),
+        "Marker file should exist"
+    );
+
+    // 3. session list from main
+    let out = aipair_ok(&main_dir, &["session", "list"]);
+    assert!(out.contains("test-session"), "list: {}", out);
+    assert!(out.contains("active"), "list status: {}", out);
+
+    // 4. Make a change in clone
+    std::fs::write(clone_dir.join("session-file.txt"), "from session\n").unwrap();
+    jj_cmd(&clone_dir, &["describe", "-m", "Session work"]);
+
+    // 5. push from clone
+    let out = aipair_ok(&clone_dir, &["push", "-m", "First push"]);
+    assert!(out.contains("Pushed!"), "push: {}", out);
+
+    // 6. session list from main — should show push summary
+    let out = aipair_ok(&main_dir, &["session", "list"]);
+    assert!(out.contains("First push"), "list after push: {}", out);
+
+    // 7. status from clone
+    let out = aipair_ok(&clone_dir, &["status"]);
+    assert!(out.contains("test-session"), "status: {}", out);
+
+    // 8. Advance main in main repo (simulates other work landing)
+    jj_cmd(&main_dir, &["new", "main", "-m", "Other work"]);
+    std::fs::write(main_dir.join("other.txt"), "other content\n").unwrap();
+    jj_cmd(&main_dir, &["bookmark", "set", "main", "-r", "@"]);
+
+    // 9. pull from clone — rebase onto updated main
+    let out = aipair_ok(&clone_dir, &["pull"]);
+    assert!(out.contains("no conflicts"), "pull: {}", out);
+
+    // 10. push after rebase
+    let out = aipair_ok(&clone_dir, &["push", "-m", "After rebase"]);
+    assert!(out.contains("Pushed!"), "push after rebase: {}", out);
+
+    // 11. session merge from main
+    let out = aipair_ok(&main_dir, &["session", "merge", "test-session"]);
+    assert!(out.contains("merged"), "merge: {}", out);
+
+    // 12. session list — should show merged status
+    let out = aipair_ok(&main_dir, &["session", "list"]);
+    assert!(out.contains("merged"), "list after merge: {}", out);
+
+    // 13. status from main — no active sessions
+    let out = aipair_ok(&main_dir, &["status"]);
+    assert!(
+        out.contains("No active sessions"),
+        "status after merge: {}",
+        out
+    );
 }
