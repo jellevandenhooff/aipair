@@ -156,9 +156,58 @@ pub async fn serve(port: Option<u16>) -> anyhow::Result<()> {
     #[cfg(not(feature = "bundled-frontend"))]
     info!("Web UI not bundled - run 'npm run dev' in web/ for development");
 
+    // Watch for binary changes and re-exec on rebuild
+    tokio::spawn(watch_binary());
+
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+async fn watch_binary() {
+    use std::os::unix::process::CommandExt;
+    use std::time::SystemTime;
+
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            warn!("Cannot determine current exe for self-watch: {}", e);
+            return;
+        }
+    };
+
+    let initial_mtime = match std::fs::metadata(&exe).and_then(|m| m.modified()) {
+        Ok(t) => t,
+        Err(e) => {
+            warn!("Cannot stat binary for self-watch: {}", e);
+            return;
+        }
+    };
+
+    let mut last_mtime = initial_mtime;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let mtime = match std::fs::metadata(&exe).and_then(|m| m.modified()) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        if mtime != last_mtime {
+            last_mtime = mtime;
+            info!("Binary changed, restarting in 500ms...");
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            // Re-check in case build was still in progress
+            let final_mtime = std::fs::metadata(&exe)
+                .and_then(|m| m.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            if final_mtime != mtime {
+                info!("Binary still changing, waiting another cycle");
+                continue;
+            }
+            let args: Vec<String> = std::env::args().collect();
+            let err = std::process::Command::new(&exe).args(&args[1..]).exec();
+            warn!("Failed to exec: {}", err);
+        }
+    }
 }
 
 async fn health() -> &'static str {
