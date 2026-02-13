@@ -9,18 +9,18 @@ interface SelectedChangeViewProps {
 }
 
 export function SelectedChangeView({ change }: SelectedChangeViewProps) {
-  const { selectedRevision, comparisonBase, setFocusedPanel } = useAppContext();
+  const { setFocusedPanel, selectedSessionName } = useAppContext();
 
   const diffViewerRef = useRef<DiffViewerHandle>(null);
 
   // Fetch data - these suspend until ready
-  // Note: both fetches happen in parallel since neither depends on the other
-  // When selectedRevision is null, backend returns latest diff
+  // Pass session name so backend queries the clone for live session changes
   const review = useReview(change.change_id);
   const diffResponse = useDiff(
     change.change_id,
-    selectedRevision?.commit_id,
-    comparisonBase?.commit_id
+    change.commit_id,
+    undefined,
+    selectedSessionName ?? undefined
   );
 
   return (

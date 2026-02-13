@@ -36,12 +36,21 @@ pub enum SessionStatus {
     Merged,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PushChangeSnapshot {
+    pub change_id: String,
+    pub commit_id: String,
+    pub description: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PushEvent {
     pub summary: String,
     pub change_id: String,
     pub commit_id: String,
     pub timestamp: DateTime<Utc>,
+    #[serde(default)]
+    pub changes: Vec<PushChangeSnapshot>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -178,8 +187,15 @@ pub fn session_new(name: &str, base_bookmark: &str) -> Result<()> {
     println!("Cloning into {}...", clone_path.display());
     let clone_jj = Jj::git_clone(&repo_path, &clone_path)?;
 
+    // Override immutable_heads to only include trunk. jj's default includes
+    // untracked_remote_bookmarks(), which makes other sessions' commits immutable.
+    clone_jj.set_repo_config(
+        "revset-aliases.\"immutable_heads()\"",
+        "present(trunk()) | tags()",
+    )?;
+
     // The clone's WC lands on root, not main. Create a new change on top of base@origin.
-    clone_jj.new_change_on(&format!("{base_bookmark}@origin"), name)?;
+    clone_jj.new_change_on(&format!("{base_bookmark}@origin"))?;
 
     // Create bookmark in clone
     let bookmark = format!("session/{name}");
@@ -236,7 +252,7 @@ pub fn session_new(name: &str, base_bookmark: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn push(message: &str) -> Result<()> {
+pub fn push(message: &str, rev: Option<&str>) -> Result<()> {
     let ctx = detect_context()?;
     let (jj, marker) = match ctx {
         SessionContext::SessionClone { jj, marker } => (jj, marker),
@@ -245,17 +261,43 @@ pub fn push(message: &str) -> Result<()> {
         }
     };
 
-    // Update bookmark to point to current working copy
-    jj.move_bookmark(&marker.bookmark, "@")?;
+    let bookmark_target = match rev {
+        Some(r) => r.to_string(),
+        None => anyhow::bail!(
+            "Missing --rev flag. Specify which revision to push, e.g.:\n  \
+             aipair push -m \"message\" --rev @\n  \
+             aipair push -m \"message\" --rev @-"
+        ),
+    };
 
-    // Check if this is the first push (bookmark doesn't exist on remote yet)
-    // We detect this by checking if the session has any prior pushes
+    // Check if there's actually something new to push by comparing against
+    // the last push event's commit_id. Change_id alone isn't enough because
+    // rebase preserves change_id but produces a new commit_id.
+    let target = jj.get_change(&bookmark_target)?;
     let main_repo_path = PathBuf::from(&marker.main_repo);
     let store = SessionStore::new(&main_repo_path);
-    let mut session = store
-        .get(&marker.session_name)?
+    let session_check = store.get(&marker.session_name)?;
+    let last_push_commit = session_check
+        .as_ref()
+        .and_then(|s| s.pushes.last())
+        .map(|p| p.commit_id.as_str());
+    if last_push_commit == Some(&target.commit_id) {
+        println!(
+            "Nothing to push — tip commit {} matches last push.",
+            &target.commit_id[..12]
+        );
+        return Ok(());
+    }
+
+    jj.move_bookmark(&marker.bookmark, &bookmark_target)?;
+
+    // Reuse session data from the check above
+    let mut session = session_check
         .context("Session metadata not found in main repo")?;
     let allow_new = session.pushes.is_empty();
+
+    // Ensure the remote bookmark is tracked (needed after first push or re-clone)
+    jj.bookmark_track(&format!("{}@origin", marker.bookmark))?;
 
     println!("Pushing {}...", marker.bookmark);
     let push_output = jj.git_push_bookmark(&marker.bookmark, allow_new)?;
@@ -263,18 +305,29 @@ pub fn push(message: &str) -> Result<()> {
         print!("{push_output}");
     }
 
-    // Record push event
-    let change = jj.get_change("@")?;
+    // Record push event with full snapshot
+    let change = jj.get_change(&bookmark_target)?;
+    let base_ref = format!("{}@origin..{}", session.base_bookmark, &bookmark_target);
+    let snapshot_changes = jj.log_revset(&base_ref)?;
+    let snapshot: Vec<PushChangeSnapshot> = snapshot_changes
+        .iter()
+        .map(|c| PushChangeSnapshot {
+            change_id: c.change_id.clone(),
+            commit_id: c.commit_id.clone(),
+            description: c.description.clone(),
+        })
+        .collect();
     session.pushes.push(PushEvent {
         summary: message.to_string(),
         change_id: change.change_id,
         commit_id: change.commit_id,
         timestamp: Utc::now(),
+        changes: snapshot,
     });
 
     // Record all session change_ids (from clone's perspective)
-    let base_ref = format!("{}@origin..@", session.base_bookmark);
-    session.changes = jj.query_change_ids(&base_ref)?;
+    let change_ids_ref = format!("{}@origin..{}", session.base_bookmark, &bookmark_target);
+    session.changes = jj.query_change_ids(&change_ids_ref)?;
 
     store.save(&session)?;
 
@@ -526,7 +579,7 @@ pub fn feedback() -> Result<()> {
         return Ok(());
     }
 
-    let output = crate::mcp::format_pending_feedback(&main_jj, reviews);
+    let output = crate::review::format_pending_feedback(&main_jj, reviews);
     print!("{output}");
     Ok(())
 }

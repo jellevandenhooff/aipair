@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{delete, get, patch, post},
@@ -19,8 +19,6 @@ use crate::review::{Author, Review, ReviewStore, ThreadStatus};
 use crate::session::{SessionStatus, SessionStore};
 use crate::timeline::TimelineStore;
 use crate::todo::TodoStore;
-use crate::topic::TopicStore;
-
 #[cfg(feature = "bundled-frontend")]
 mod embedded {
     use rust_embed::Embed;
@@ -61,7 +59,6 @@ async fn static_handler(uri: axum::http::Uri) -> impl IntoResponse {
 struct AppState {
     jj: Jj,
     store: ReviewStore,
-    topics: TopicStore,
     todos: TodoStore,
     timeline: TimelineStore,
     sessions: SessionStore,
@@ -88,21 +85,16 @@ pub async fn serve(port: Option<u16>) -> anyhow::Result<()> {
     let jj = Jj::discover()?;
     let store = ReviewStore::new(jj.repo_path());
     store.init()?;
-    let topics = TopicStore::new(jj.repo_path());
-    topics.init()?;
 
     let todos = TodoStore::new(jj.repo_path());
     let timeline = TimelineStore::new(jj.repo_path());
     let sessions = SessionStore::new(jj.repo_path());
-    let state = Arc::new(AppState { jj, store, topics, todos, timeline, sessions });
+    let state = Arc::new(AppState { jj, store, todos, timeline, sessions });
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
-
-    // MCP server over HTTP (stateless, merged before adding app state)
-    let mcp_router = crate::mcp::create_mcp_router();
 
     let app = Router::new()
         .route("/api/health", get(health))
@@ -115,17 +107,14 @@ pub async fn serve(port: Option<u16>) -> anyhow::Result<()> {
         .route("/api/changes/{change_id}/threads/{thread_id}/resolve", post(resolve_thread))
         .route("/api/changes/{change_id}/threads/{thread_id}/reopen", post(reopen_thread))
         .route("/api/changes/{change_id}/merge", post(merge_change))
-        .route("/api/topics", get(list_topics))
-        .route("/api/topics/{topic_id}", get(get_topic))
-        .route("/api/topics/{topic_id}/finish", post(finish_topic))
         .route("/api/todos", get(get_todos))
         .route("/api/todos", post(create_todo))
         .route("/api/todos/{id}", patch(update_todo))
         .route("/api/todos/{id}", delete(delete_todo))
         .route("/api/timeline", get(get_timeline))
         .route("/api/sessions/{name}/merge", post(merge_session))
-        .with_state(state)
-        .merge(mcp_router);
+        .route("/api/sessions/{name}/changes", get(get_session_changes))
+        .with_state(state);
 
     // Add static file serving for bundled frontend
     #[cfg(feature = "bundled-frontend")]
@@ -149,8 +138,6 @@ pub async fn serve(port: Option<u16>) -> anyhow::Result<()> {
     }
 
     info!("Starting server on http://localhost:{}", actual_port);
-    info!("MCP endpoint available at http://localhost:{}/mcp", actual_port);
-
     #[cfg(feature = "bundled-frontend")]
     info!("Web UI available at http://localhost:{}", actual_port);
     #[cfg(not(feature = "bundled-frontend"))]
@@ -223,9 +210,7 @@ struct ChangeWithStatus {
     open_thread_count: usize,
     revision_count: usize,
     has_pending_changes: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    topic_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+
     session_name: Option<String>,
 }
 
@@ -258,11 +243,23 @@ impl DagRow {
 }
 
 #[derive(Serialize)]
+struct SessionPush {
+    summary: String,
+    commit_id: String,
+    timestamp: String,
+    change_count: usize,
+}
+
+#[derive(Serialize)]
 struct SessionSummary {
     name: String,
     status: String,
     push_count: usize,
     last_push: Option<String>,
+    base_bookmark: String,
+    open_thread_count: usize,
+    change_count: usize,
+    pushes: Vec<SessionPush>,
 }
 
 #[derive(Serialize)]
@@ -274,7 +271,8 @@ struct ChangesResponse {
 }
 
 async fn list_changes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let changes = match state.jj.log(100) {
+    // Scope to main's ancestors — sessions get their own per-session query
+    let changes = match state.jj.log_revset("ancestors(main, 100)") {
         Ok(c) => c,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
@@ -291,30 +289,40 @@ async fn list_changes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         .map(|r| (r.change_id.clone(), r))
         .collect();
 
-    // Load all topics to map changes to topic IDs
-    let topics = state.topics.list().unwrap_or_default();
-    let change_to_topic: std::collections::HashMap<String, String> = topics
-        .iter()
-        .flat_map(|t| t.changes.iter().map(move |c| (c.clone(), t.id.clone())))
-        .collect();
-
-    // Load sessions to map changes to session names
+    // Load sessions — build rich summaries with thread counts and change counts
     let all_sessions = state.sessions.list().unwrap_or_default();
-    let change_to_session: std::collections::HashMap<String, String> = all_sessions
-        .iter()
-        .filter(|s| s.status == SessionStatus::Active)
-        .flat_map(|s| s.changes.iter().map(move |c| (c.clone(), s.name.clone())))
-        .collect();
     let session_summaries: Vec<SessionSummary> = all_sessions
         .iter()
-        .map(|s| SessionSummary {
-            name: s.name.clone(),
-            status: match s.status {
-                SessionStatus::Active => "active".to_string(),
-                SessionStatus::Merged => "merged".to_string(),
-            },
-            push_count: s.pushes.len(),
-            last_push: s.pushes.last().map(|p| p.summary.clone()),
+        .map(|s| {
+            // Count open threads across this session's changes
+            let open_threads: usize = s.changes.iter()
+                .filter_map(|cid| review_map.get(cid))
+                .map(|r| r.threads.iter().filter(|t| t.status == ThreadStatus::Open).count())
+                .sum();
+            // Count changes from jj (if bookmark exists)
+            let revset = format!("{}..{}", s.base_bookmark, s.bookmark);
+            let change_count = state.jj.log_revset(&revset)
+                .map(|c| c.len())
+                .unwrap_or(s.changes.len());
+            let pushes = s.pushes.iter().map(|p| SessionPush {
+                summary: p.summary.clone(),
+                commit_id: p.commit_id.clone(),
+                timestamp: p.timestamp.to_rfc3339(),
+                change_count: p.changes.len(),
+            }).collect();
+            SessionSummary {
+                name: s.name.clone(),
+                status: match s.status {
+                    SessionStatus::Active => "active".to_string(),
+                    SessionStatus::Merged => "merged".to_string(),
+                },
+                push_count: s.pushes.len(),
+                last_push: s.pushes.last().map(|p| p.summary.clone()),
+                base_bookmark: s.base_bookmark.clone(),
+                open_thread_count: open_threads,
+                change_count,
+                pushes,
+            }
         })
         .collect();
 
@@ -374,16 +382,13 @@ async fn list_changes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                     r.working_commit_id.as_ref().map(|w| w != &change.commit_id).unwrap_or(false)
                 })
                 .unwrap_or(false);
-            let topic_id = change_to_topic.get(&change.change_id).cloned();
-            let session_name = change_to_session.get(&change.change_id).cloned();
             ChangeWithStatus {
                 change,
                 merged,
                 open_thread_count,
                 revision_count,
                 has_pending_changes,
-                topic_id,
-                session_name,
+                session_name: None,
             }
         })
         .collect();
@@ -395,6 +400,23 @@ async fn list_changes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         sessions: session_summaries,
     })
     .into_response()
+}
+
+/// Resolve which jj repo path to use. If a session name is given, return its
+/// clone's Jj (error if session not found or clone missing). Otherwise return
+/// the main repo's Jj.
+fn resolve_jj_for_session(state: &AppState, session_name: Option<&str>) -> Result<Jj, (StatusCode, String)> {
+    if let Some(name) = session_name {
+        let session = state.sessions.get(name)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .ok_or_else(|| (StatusCode::NOT_FOUND, format!("Session '{name}' not found")))?;
+        let clone_path = state.jj.repo_path().join(&session.clone_path);
+        if !clone_path.exists() {
+            return Err((StatusCode::NOT_FOUND, format!("Clone for session '{name}' not found")));
+        }
+        return Ok(Jj::new(&clone_path));
+    }
+    Ok(Jj::new(state.jj.repo_path()))
 }
 
 /// A single chunk in a text diff
@@ -429,10 +451,10 @@ fn compute_text_diff(old: &str, new: &str) -> Vec<DiffChunk> {
 struct DiffResponse {
     diff: crate::jj::Diff,
     /// Commit message for the target revision (when viewing a specific revision)
-    #[serde(skip_serializing_if = "Option::is_none")]
+
     target_message: Option<String>,
     /// Line-by-line diff of commit messages (if comparing revisions with different messages)
-    #[serde(skip_serializing_if = "Option::is_none")]
+
     message_diff: Option<Vec<DiffChunk>>,
 }
 
@@ -442,6 +464,8 @@ struct DiffQuery {
     commit: Option<String>,
     /// Optional base commit to compare from (defaults to parent)
     base: Option<String>,
+    /// Optional session name — when set, queries the session's clone
+    session: Option<String>,
 }
 
 async fn get_diff(
@@ -449,23 +473,29 @@ async fn get_diff(
     Path(change_id): Path<String>,
     axum::extract::Query(query): axum::extract::Query<DiffQuery>,
 ) -> impl IntoResponse {
+    // Resolve which jj instance to use: clone (for session) or main repo
+    let jj = match resolve_jj_for_session(&state, query.session.as_deref()) {
+        Ok(jj) => jj,
+        Err((status, msg)) => return (status, msg).into_response(),
+    };
+
     // If a specific commit is requested, use it as the "to" revision
     let to_rev = query.commit.as_deref().unwrap_or(&change_id);
 
-    let diff = match state.jj.diff(to_rev, query.base.as_deref()) {
+    let diff = match jj.diff(to_rev, query.base.as_deref()) {
         Ok(diff) => diff,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
 
     // Get target message when viewing a specific revision
     let target_message = query.commit.as_ref().and_then(|commit| {
-        state.jj.get_change(commit).ok().map(|c| c.description)
+        jj.get_change(commit).ok().map(|c| c.description)
     });
 
     // Compute message diff when comparing revisions
     let message_diff = match (query.base.as_ref(), query.commit.as_ref()) {
         (Some(base), Some(_commit)) => {
-            let base_msg = state.jj.get_change(base).ok().map(|c| c.description).unwrap_or_default();
+            let base_msg = jj.get_change(base).ok().map(|c| c.description).unwrap_or_default();
             let target_msg = target_message.clone().unwrap_or_default();
             if base_msg != target_msg {
                 Some(compute_text_diff(&base_msg, &target_msg))
@@ -614,7 +644,6 @@ async fn add_comment(
         Ok((review, thread_id)) => {
             let _ = state.timeline.append(&crate::timeline::TimelineEntry {
                 timestamp: chrono::Utc::now(),
-                topic_id: None,
                 data: crate::timeline::TimelineEventData::ReviewComment {
                     change_id: change_id.clone(),
                     thread_id: thread_id.clone(),
@@ -644,7 +673,6 @@ async fn reply_to_thread(
         Ok(review) => {
             let _ = state.timeline.append(&crate::timeline::TimelineEntry {
                 timestamp: chrono::Utc::now(),
-                topic_id: None,
                 data: crate::timeline::TimelineEventData::ReviewReply {
                     change_id: change_id.clone(),
                     thread_id: thread_id.clone(),
@@ -794,254 +822,13 @@ async fn merge_change(
     }
 }
 
-// --- Topic endpoints ---
-
-#[derive(Serialize)]
-struct TopicChangeInfo {
-    change_id: String,
-    description: String,
-    open_thread_count: usize,
-}
-
-#[derive(Serialize)]
-struct TopicResponse {
-    id: String,
-    name: String,
-    status: crate::topic::TopicStatus,
-    change_count: usize,
-    changes: Vec<TopicChangeInfo>,
-    notes: Option<String>,
-    created_at: chrono::DateTime<chrono::Utc>,
-}
-
-#[derive(Serialize)]
-struct TopicsListResponse {
-    topics: Vec<TopicResponse>,
-}
-
-async fn list_topics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let topics = match state.topics.list() {
-        Ok(t) => t,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
-
-    // Get all changes for ordering
-    let all_changes = state.jj.log(200).unwrap_or_default();
-
-    let mut topic_responses = Vec::new();
-    for topic in &topics {
-        // Sort topic's changes in topological order (jj log returns newest first, reverse for base-to-tip)
-        let mut ordered: Vec<_> = all_changes
-            .iter()
-            .filter(|c| topic.changes.contains(&c.change_id))
-            .collect();
-        ordered.reverse();
-
-        let changes: Vec<TopicChangeInfo> = ordered
-            .iter()
-            .map(|c| {
-                let open_threads = state
-                    .store
-                    .get(&c.change_id)
-                    .ok()
-                    .flatten()
-                    .map(|r| {
-                        r.threads
-                            .iter()
-                            .filter(|t| t.status == ThreadStatus::Open)
-                            .count()
-                    })
-                    .unwrap_or(0);
-                TopicChangeInfo {
-                    change_id: c.change_id.clone(),
-                    description: c.description.clone(),
-                    open_thread_count: open_threads,
-                }
-            })
-            .collect();
-
-        let notes = state.topics.get_notes(&topic.id).ok().filter(|n| !n.is_empty());
-
-        topic_responses.push(TopicResponse {
-            id: topic.id.clone(),
-            name: topic.name.clone(),
-            status: topic.status.clone(),
-            change_count: topic.changes.len(),
-            changes,
-            notes,
-            created_at: topic.created_at,
-        });
-    }
-
-    Json(TopicsListResponse {
-        topics: topic_responses,
-    })
-    .into_response()
-}
-
-async fn get_topic(
-    State(state): State<Arc<AppState>>,
-    Path(topic_id): Path<String>,
-) -> impl IntoResponse {
-    let topic = match state.topics.get(&topic_id) {
-        Ok(Some(t)) => t,
-        Ok(None) => return (StatusCode::NOT_FOUND, "Topic not found").into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
-
-    let all_changes = state.jj.log(200).unwrap_or_default();
-    let mut ordered: Vec<_> = all_changes
-        .iter()
-        .filter(|c| topic.changes.contains(&c.change_id))
-        .collect();
-    ordered.reverse();
-
-    let changes: Vec<TopicChangeInfo> = ordered
-        .iter()
-        .map(|c| {
-            let open_threads = state
-                .store
-                .get(&c.change_id)
-                .ok()
-                .flatten()
-                .map(|r| {
-                    r.threads
-                        .iter()
-                        .filter(|t| t.status == ThreadStatus::Open)
-                        .count()
-                })
-                .unwrap_or(0);
-            TopicChangeInfo {
-                change_id: c.change_id.clone(),
-                description: c.description.clone(),
-                open_thread_count: open_threads,
-            }
-        })
-        .collect();
-
-    let notes = state.topics.get_notes(&topic.id).ok().filter(|n| !n.is_empty());
-
-    Json(TopicResponse {
-        id: topic.id.clone(),
-        name: topic.name.clone(),
-        status: topic.status.clone(),
-        change_count: topic.changes.len(),
-        changes,
-        notes,
-        created_at: topic.created_at,
-    })
-    .into_response()
-}
-
-#[derive(Deserialize)]
-struct FinishTopicRequest {
-    #[serde(default)]
-    force: bool,
-}
-
-async fn finish_topic(
-    State(state): State<Arc<AppState>>,
-    Path(topic_id): Path<String>,
-    Json(req): Json<FinishTopicRequest>,
-) -> impl IntoResponse {
-    let topic = match state.topics.get(&topic_id) {
-        Ok(Some(t)) => t,
-        Ok(None) => return (StatusCode::NOT_FOUND, "Topic not found".to_string()).into_response(),
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
-
-    if topic.changes.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            "Topic has no changes".to_string(),
-        )
-            .into_response();
-    }
-
-    let all_changes = match state.jj.log(200) {
-        Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
-
-    let ordered: Vec<_> = all_changes
-        .iter()
-        .filter(|c| topic.changes.contains(&c.change_id))
-        .collect();
-
-    if ordered.len() != topic.changes.len() {
-        return (
-            StatusCode::BAD_REQUEST,
-            "Some topic changes not found in jj log".to_string(),
-        )
-            .into_response();
-    }
-
-    // Validate descriptions
-    let empty: Vec<_> = ordered
-        .iter()
-        .filter(|c| c.description.trim().is_empty())
-        .map(|c| c.change_id[..8.min(c.change_id.len())].to_string())
-        .collect();
-    if !empty.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            format!("Changes with empty descriptions: {}", empty.join(", ")),
-        )
-            .into_response();
-    }
-
-    // Validate open threads
-    if !req.force {
-        let mut total_open = 0;
-        for change in &ordered {
-            if let Ok(Some(review)) = state.store.get(&change.change_id) {
-                total_open += review
-                    .threads
-                    .iter()
-                    .filter(|t| t.status == ThreadStatus::Open)
-                    .count();
-            }
-        }
-        if total_open > 0 {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("{} open review thread(s). Use force to override.", total_open),
-            )
-                .into_response();
-        }
-    }
-
-    // Tip is first in ordered (newest first from jj log)
-    let tip = &ordered[0];
-
-    if let Err(e) = state.jj.move_bookmark("main", &tip.change_id) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-    }
-
-    if let Err(e) = state.topics.finish(&topic_id) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-    }
-
-    Json(serde_json::json!({
-        "success": true,
-        "message": format!("Finished topic '{}'. main moved to {}.", topic.name, &tip.change_id[..8.min(tip.change_id.len())])
-    }))
-    .into_response()
-}
-
 // --- Todo endpoints ---
 
 async fn get_todos(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let mut tree = match state.todos.load() {
+    let tree = match state.todos.load() {
         Ok(t) => t,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
-
-    // Sync with topics
-    let topics = state.topics.list().unwrap_or_default();
-    if let Err(e) = state.todos.sync_topics(&mut tree, &topics) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
-    }
 
     Json(tree).into_response()
 }
@@ -1165,6 +952,187 @@ async fn get_timeline(
 }
 
 // --- Session endpoints ---
+
+#[derive(Serialize)]
+struct SessionChangesResponse {
+    changes: Vec<ChangeWithStatus>,
+    graph: Vec<DagRow>,
+    /// Commit ID that these changes are actually based on
+    base_commit_id: Option<String>,
+    /// What the base bookmark currently resolves to in the main repo
+    base_current_commit_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SessionChangesQuery {
+    /// "live", "latest", or a push index (0 = oldest)
+    #[serde(default = "default_version")]
+    version: String,
+}
+
+fn default_version() -> String {
+    "live".to_string()
+}
+
+/// Compute DAG graph from a list of changes.
+fn compute_graph(changes: &[ChangeWithStatus]) -> Vec<DagRow> {
+    let change_ids: std::collections::HashSet<&str> = changes
+        .iter()
+        .map(|c| c.change.change_id.as_str())
+        .collect();
+    let mut renderer = GraphRowRenderer::new();
+    let mut graph: Vec<DagRow> = Vec::new();
+    for c in changes {
+        let parents: Vec<Ancestor<String>> = c.change
+            .parent_change_ids
+            .iter()
+            .filter(|p| change_ids.contains(p.as_str()))
+            .map(|p| Ancestor::Parent(p.clone()))
+            .collect();
+        let glyph = if c.change.empty { "o" } else { "@" };
+        let row = renderer.next_row(c.change.change_id.clone(), parents, glyph.to_string(), String::new());
+        graph.push(DagRow::from_graph_row(row));
+    }
+    graph
+}
+
+/// Convert raw jj changes to ChangeWithStatus (no review data).
+fn changes_to_status(changes: Vec<crate::jj::Change>, session_name: &str) -> Vec<ChangeWithStatus> {
+    changes.into_iter().map(|change| ChangeWithStatus {
+        change,
+        merged: false,
+        open_thread_count: 0,
+        revision_count: 0,
+        has_pending_changes: false,
+        session_name: Some(session_name.to_string()),
+    }).collect()
+}
+
+async fn get_session_changes(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Query(query): Query<SessionChangesQuery>,
+) -> impl IntoResponse {
+    let session = match state.sessions.get(&name) {
+        Ok(Some(s)) => s,
+        Ok(None) => return (StatusCode::NOT_FOUND, format!("Session '{name}' not found")).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    // What the base bookmark currently resolves to in the main repo
+    let base_current_commit_id = state.jj.get_change(&session.base_bookmark)
+        .ok().map(|c| c.commit_id);
+
+    let (changes_with_status, base_commit_id) = if query.version == "live" {
+        // Query the clone directory
+        let clone_path = state.jj.repo_path().join(&session.clone_path);
+        if !clone_path.exists() {
+            // No clone — fall back to latest pushed state
+            return get_session_changes_latest(&state, &session, &name).into_response();
+        }
+        let clone_jj = Jj::new(&clone_path);
+        let revset = format!("{}@origin..@", session.base_bookmark);
+        // Base in the clone: what base_bookmark@origin resolves to
+        let base = clone_jj.get_change(&format!("{}@origin", session.base_bookmark))
+            .ok().map(|c| c.commit_id);
+        match clone_jj.log_revset(&revset) {
+            Ok(changes) => (changes_to_status(changes, &name), base),
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        }
+    } else if query.version == "latest" {
+        return get_session_changes_latest(&state, &session, &name).into_response();
+    } else if let Ok(push_idx) = query.version.parse::<usize>() {
+        // Historical push — reconstruct from stored commit_ids
+        if push_idx >= session.pushes.len() {
+            return (StatusCode::NOT_FOUND, format!("Push index {push_idx} out of range")).into_response();
+        }
+        let push = &session.pushes[push_idx];
+        if push.changes.is_empty() {
+            // Old push without snapshot data — fall back to latest
+            return get_session_changes_latest(&state, &session, &name).into_response();
+        }
+        // Query jj by commit_ids to get full change info (including parents)
+        let commit_ids: Vec<&str> = push.changes.iter().map(|c| c.commit_id.as_str()).collect();
+        let revset = commit_ids.join(" | ");
+        match state.jj.log_revset(&revset) {
+            // For historical pushes, base is unknown (could derive from parents but not critical)
+            Ok(changes) => (changes_to_status(changes, &name), None),
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        }
+    } else {
+        return (StatusCode::BAD_REQUEST, format!("Invalid version: {}", query.version)).into_response();
+    };
+
+    let graph = compute_graph(&changes_with_status);
+    Json(SessionChangesResponse {
+        changes: changes_with_status,
+        graph,
+        base_commit_id,
+        base_current_commit_id,
+    }).into_response()
+}
+
+/// Helper: get changes from the current pushed state (main repo bookmark).
+fn get_session_changes_latest(
+    state: &AppState,
+    session: &crate::session::Session,
+    name: &str,
+) -> Json<SessionChangesResponse> {
+    let revset = format!("{}..{}", session.base_bookmark, session.bookmark);
+    let changes = state.jj.log_revset(&revset).unwrap_or_default();
+
+    // For "latest", base is the current base bookmark in the main repo
+    let base_commit_id = state.jj.get_change(&session.base_bookmark)
+        .ok().map(|c| c.commit_id);
+
+    // Load reviews for thread/revision info
+    let reviews = state.store.list().unwrap_or_default();
+    let review_map: std::collections::HashMap<_, _> = reviews
+        .into_iter()
+        .map(|r| (r.change_id.clone(), r))
+        .collect();
+
+    let main_change_id = state.jj.get_bookmark("main").ok().flatten();
+
+    let changes_with_status: Vec<ChangeWithStatus> = changes
+        .into_iter()
+        .map(|change| {
+            let merged = main_change_id.as_ref() == Some(&change.change_id);
+            let (open_thread_count, revision_count, has_pending_changes) = review_map
+                .get(&change.change_id)
+                .map(|r| {
+                    let open = r.threads.iter().filter(|t| t.status == ThreadStatus::Open).count();
+                    let pending = match (r.working_commit_id.as_ref(), r.revisions.last()) {
+                        (Some(working), Some(last_rev)) => working != &last_rev.commit_id,
+                        (Some(_), None) => true,
+                        _ => false,
+                    };
+                    (open, r.revisions.len(), pending)
+                })
+                .unwrap_or((0, 0, false));
+            let has_pending_changes = has_pending_changes || review_map
+                .get(&change.change_id)
+                .map(|r| r.working_commit_id.as_ref().map(|w| w != &change.commit_id).unwrap_or(false))
+                .unwrap_or(false);
+            ChangeWithStatus {
+                change,
+                merged,
+                open_thread_count,
+                revision_count,
+                has_pending_changes,
+                session_name: Some(name.to_string()),
+            }
+        })
+        .collect();
+
+    let graph = compute_graph(&changes_with_status);
+    Json(SessionChangesResponse {
+        changes: changes_with_status,
+        graph,
+        base_commit_id: base_commit_id.clone(),
+        base_current_commit_id: base_commit_id, // latest is always current
+    })
+}
 
 async fn merge_session(
     State(state): State<Arc<AppState>>,

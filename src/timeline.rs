@@ -11,8 +11,6 @@ const IMPORT_STATE_FILE: &str = ".aipair/timeline-import-state.json";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimelineEntry {
     pub timestamp: DateTime<Utc>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub topic_id: Option<String>,
     #[serde(flatten)]
     pub data: TimelineEventData,
 }
@@ -307,7 +305,6 @@ fn parse_claude_session_line(line: &str, session_id: &str) -> Option<TimelineEnt
 
             Some(TimelineEntry {
                 timestamp,
-                topic_id: None,
                 data: TimelineEventData::ChatMessage {
                     session_id: session_id.to_string(),
                     author: ChatAuthor::User,
@@ -338,7 +335,6 @@ fn parse_claude_session_line(line: &str, session_id: &str) -> Option<TimelineEnt
 
             Some(TimelineEntry {
                 timestamp,
-                topic_id: None,
                 data: TimelineEventData::ChatMessage {
                     session_id: session_id.to_string(),
                     author: ChatAuthor::Claude,
@@ -404,7 +400,6 @@ mod tests {
 
         let entry = TimelineEntry {
             timestamp: Utc::now(),
-            topic_id: None,
             data: TimelineEventData::ReviewComment {
                 change_id: "abc123".to_string(),
                 thread_id: "t1".to_string(),
@@ -429,7 +424,6 @@ mod tests {
         store
             .append(&TimelineEntry {
                 timestamp: Utc::now(),
-                topic_id: None,
                 data: TimelineEventData::ReviewComment {
                     change_id: "abc".to_string(),
                     thread_id: "t1".to_string(),
@@ -444,7 +438,6 @@ mod tests {
         store
             .append(&TimelineEntry {
                 timestamp: Utc::now(),
-                topic_id: None,
                 data: TimelineEventData::ChatMessage {
                     session_id: "s1".to_string(),
                     author: ChatAuthor::User,

@@ -1,15 +1,11 @@
 import { createContext, useContext, useState, useCallback, useTransition, ReactNode } from 'react';
-import { flushSync } from 'react-dom';
 import type { Change } from './api';
-import type { Revision } from './types';
 
-type FocusedPanel = 'changes' | 'revisions' | 'diff' | 'threads' | 'todos' | 'sessions';
+type FocusedPanel = 'changes' | 'diff' | 'threads' | 'todos';
 
 // Selection state - triggers data fetching, needs transitions
 interface SelectionState {
   selectedChangeId: string | null;
-  selectedRevision: Revision | null;
-  comparisonBase: Revision | null;
 }
 
 // UI state - instant updates, no transitions needed
@@ -18,7 +14,8 @@ interface UIState {
   selectedThreadId: string | null;
   selectedTodoId: string | null;
   todoPanelVisible: boolean;
-  sessionsPanelVisible: boolean;
+  selectedSessionName: string | null;
+  selectedSessionVersion: string;
   newCommentText: string;
   replyingToThread: boolean;
   replyText: string;
@@ -28,11 +25,7 @@ interface UIState {
 interface AppContextValue {
   // Selection state + actions
   selectedChangeId: string | null;
-  selectedRevision: Revision | null;
-  comparisonBase: Revision | null;
   selectChange: (changeId: string | null) => void;
-  selectRevision: (revision: Revision | null) => void;
-  setComparisonBase: (revision: Revision | null) => void;
   isSelectingChange: boolean; // isPending from useTransition
 
   // UI state + actions
@@ -58,9 +51,11 @@ interface AppContextValue {
   todoPanelVisible: boolean;
   toggleTodoPanel: () => void;
 
-  // Sessions panel
-  sessionsPanelVisible: boolean;
-  toggleSessionsPanel: () => void;
+  // Session selection
+  selectedSessionName: string | null;
+  selectedSessionVersion: string;
+  selectSession: (name: string | null) => void;
+  selectSessionVersion: (version: string) => void;
 
   // Navigation helpers
   navigateChanges: (direction: 'up' | 'down', changes: Change[], selectFn?: (id: string) => void) => void;
@@ -75,8 +70,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [isPending, startTransition] = useTransition();
   const [selection, setSelection] = useState<SelectionState>({
     selectedChangeId: null,
-    selectedRevision: null,
-    comparisonBase: null,
   });
 
   // UI state - instant updates
@@ -85,7 +78,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     selectedThreadId: null,
     selectedTodoId: null,
     todoPanelVisible: false,
-    sessionsPanelVisible: false,
+    selectedSessionName: null,
+    selectedSessionVersion: 'live',
     newCommentText: '',
     replyingToThread: false,
     replyText: '',
@@ -99,16 +93,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const confirmed = window.confirm('You have an unsaved comment. Discard it?');
       if (!confirmed) return;
     }
-
-    // Reset revision immediately with flushSync to prevent flash when new review data arrives
-    // (old revision number might match a revision in the new change)
-    flushSync(() => {
-      setSelection(prev => ({
-        ...prev,
-        selectedRevision: null,
-        comparisonBase: null,
-      }));
-    });
 
     // Change ID update is in transition so old diff stays visible during load
     startTransition(() => {
@@ -128,50 +112,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }));
   }, [selection.selectedChangeId, ui.newCommentText, startTransition]);
 
-  const selectRevision = useCallback((revision: Revision | null) => {
-    startTransition(() => {
-      setSelection(prev => ({
-        ...prev,
-        selectedRevision: revision,
-        comparisonBase: null,
-      }));
-    });
-  }, [startTransition]);
-
-  const setComparisonBase = useCallback((revision: Revision | null) => {
-    setSelection(prev => ({
-      ...prev,
-      comparisonBase: revision,
-    }));
-  }, []);
-
   // UI actions - instant, no transitions
   const setFocusedPanel = useCallback((panel: FocusedPanel) => {
     setUI(prev => ({ ...prev, focusedPanel: panel }));
   }, []);
 
   const cyclePanel = useCallback((reverse: boolean, hasThreads: boolean) => {
-    // Order: changes → diff → revisions → threads → todos → sessions → changes
+    // Order: changes → diff → threads → todos → changes
     setUI(prev => {
-      const { focusedPanel, todoPanelVisible, sessionsPanelVisible } = prev;
+      const { focusedPanel, todoPanelVisible } = prev;
       let next: FocusedPanel;
 
       if (reverse) {
-        // Reverse: changes → sessions → todos → threads → revisions → diff → changes
-        if (focusedPanel === 'changes') next = sessionsPanelVisible ? 'sessions' : (todoPanelVisible ? 'todos' : (hasThreads ? 'threads' : 'revisions'));
-        else if (focusedPanel === 'sessions') next = todoPanelVisible ? 'todos' : (hasThreads ? 'threads' : 'revisions');
-        else if (focusedPanel === 'todos') next = hasThreads ? 'threads' : 'revisions';
-        else if (focusedPanel === 'threads') next = 'revisions';
-        else if (focusedPanel === 'revisions') next = 'diff';
+        if (focusedPanel === 'changes') next = todoPanelVisible ? 'todos' : (hasThreads ? 'threads' : 'diff');
+        else if (focusedPanel === 'todos') next = hasThreads ? 'threads' : 'diff';
+        else if (focusedPanel === 'threads') next = 'diff';
         else next = 'changes'; // diff → changes
       } else {
-        // Forward: changes → diff → revisions → threads → todos → sessions → changes
         if (focusedPanel === 'changes') next = 'diff';
-        else if (focusedPanel === 'diff') next = 'revisions';
-        else if (focusedPanel === 'revisions') next = hasThreads ? 'threads' : (todoPanelVisible ? 'todos' : (sessionsPanelVisible ? 'sessions' : 'changes'));
-        else if (focusedPanel === 'threads') next = todoPanelVisible ? 'todos' : (sessionsPanelVisible ? 'sessions' : 'changes');
-        else if (focusedPanel === 'todos') next = sessionsPanelVisible ? 'sessions' : 'changes';
-        else next = 'changes'; // sessions → changes
+        else if (focusedPanel === 'diff') next = hasThreads ? 'threads' : (todoPanelVisible ? 'todos' : 'changes');
+        else if (focusedPanel === 'threads') next = todoPanelVisible ? 'todos' : 'changes';
+        else next = 'changes'; // todos → changes
       }
 
       return { ...prev, focusedPanel: next };
@@ -218,12 +179,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }));
   }, []);
 
-  const toggleSessionsPanel = useCallback(() => {
+  const selectSession = useCallback((name: string | null) => {
     setUI(prev => ({
       ...prev,
-      sessionsPanelVisible: !prev.sessionsPanelVisible,
-      focusedPanel: !prev.sessionsPanelVisible ? 'sessions' : (prev.focusedPanel === 'sessions' ? 'changes' : prev.focusedPanel),
+      selectedSessionName: name,
+      selectedSessionVersion: 'live',
     }));
+    // Clear change selection when switching sessions
+    startTransition(() => {
+      setSelection(prev => ({
+        ...prev,
+        selectedChangeId: null,
+      }));
+    });
+  }, [startTransition]);
+
+  const selectSessionVersion = useCallback((version: string) => {
+    setUI(prev => ({ ...prev, selectedSessionVersion: version }));
   }, []);
 
   // Navigation helpers
@@ -286,11 +258,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const value: AppContextValue = {
     // Selection
     selectedChangeId: selection.selectedChangeId,
-    selectedRevision: selection.selectedRevision,
-    comparisonBase: selection.comparisonBase,
     selectChange,
-    selectRevision,
-    setComparisonBase,
     isSelectingChange: isPending,
 
     // UI
@@ -316,9 +284,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     todoPanelVisible: ui.todoPanelVisible,
     toggleTodoPanel,
 
-    // Sessions panel
-    sessionsPanelVisible: ui.sessionsPanelVisible,
-    toggleSessionsPanel,
+    // Session selection
+    selectedSessionName: ui.selectedSessionName,
+    selectedSessionVersion: ui.selectedSessionVersion,
+    selectSession,
+    selectSessionVersion,
 
     // Navigation
     navigateChanges,
@@ -337,16 +307,3 @@ export function useAppContext() {
   return context;
 }
 
-// Convenience hook for just selection state (common case)
-export function useSelection() {
-  const ctx = useAppContext();
-  return {
-    selectedChangeId: ctx.selectedChangeId,
-    selectedRevision: ctx.selectedRevision,
-    comparisonBase: ctx.comparisonBase,
-    selectChange: ctx.selectChange,
-    selectRevision: ctx.selectRevision,
-    setComparisonBase: ctx.setComparisonBase,
-    isSelectingChange: ctx.isSelectingChange,
-  };
-}

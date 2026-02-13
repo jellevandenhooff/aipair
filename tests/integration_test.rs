@@ -51,6 +51,15 @@ impl TestHarness {
             .status()
             .expect("Failed to describe");
 
+        // Create main bookmark
+        Command::new("jj")
+            .args(["bookmark", "create", "main", "-r", "@"])
+            .current_dir(repo_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("Failed to create main bookmark");
+
         // Create a new change with modifications
         Command::new("jj")
             .args(["new", "-m", "Add more content"])
@@ -228,9 +237,17 @@ async fn test_thread_relocation_after_edit() {
         .status()
         .unwrap();
 
-    // Create working change
+    // Create working change and move main to it
     Command::new("jj")
         .args(["new", "-m", "Working change"])
+        .current_dir(repo_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+
+    Command::new("jj")
+        .args(["bookmark", "create", "main", "-r", "@"])
         .current_dir(repo_path)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -527,20 +544,16 @@ async fn test_session_feedback_respond() {
     let (mut server, base_url) = start_server(&main_dir).await;
     let client = Client::new();
 
-    // Get changes to find the session change_id
+    // Get session changes to find the session change_id
     let resp = client
-        .get(&format!("{}/api/changes", base_url))
+        .get(&format!("{}/api/sessions/test-session/changes", base_url))
         .send()
         .await
         .unwrap();
     let body: serde_json::Value = resp.json().await.unwrap();
     let changes = body["changes"].as_array().unwrap();
-    // Find the session change (has session_name)
-    let session_change = changes
-        .iter()
-        .find(|c| c["session_name"].as_str() == Some("test-session"))
-        .expect("Should find session change");
-    let change_id = session_change["change_id"].as_str().unwrap().to_string();
+    assert!(!changes.is_empty(), "Should have session changes");
+    let change_id = changes[0]["change_id"].as_str().unwrap().to_string();
 
     // Create a review and add a comment via API
     client
@@ -628,7 +641,7 @@ async fn test_session_api() {
     let (mut server, base_url) = start_server(&main_dir).await;
     let client = Client::new();
 
-    // GET /api/changes → verify session_name on session changes
+    // GET /api/changes → verify sessions metadata
     let resp = client
         .get(&format!("{}/api/changes", base_url))
         .send()
@@ -636,18 +649,6 @@ async fn test_session_api() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
-
-    // Check session_name appears on changes
-    let changes = body["changes"].as_array().unwrap();
-    let session_changes: Vec<_> = changes
-        .iter()
-        .filter(|c| c["session_name"].as_str() == Some("api-session"))
-        .collect();
-    assert!(
-        !session_changes.is_empty(),
-        "Should have changes with session_name. Changes: {:?}",
-        changes
-    );
 
     // Check sessions array in response
     let sessions = body["sessions"].as_array().unwrap();
@@ -658,6 +659,38 @@ async fn test_session_api() {
         .expect("Should find api-session");
     assert_eq!(session["status"], "active");
     assert_eq!(session["push_count"], 1);
+    assert_eq!(session["base_bookmark"], "main");
+    assert!(session["change_count"].as_u64().unwrap() > 0, "Should have change_count");
+
+    // GET /api/sessions/api-session/changes → verify session-scoped changes
+    let resp = client
+        .get(&format!("{}/api/sessions/api-session/changes", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let session_changes = body["changes"].as_array().unwrap();
+    assert!(
+        !session_changes.is_empty(),
+        "Should have session-scoped changes. Response: {:?}",
+        body
+    );
+    assert_eq!(
+        session_changes[0]["session_name"].as_str(),
+        Some("api-session"),
+        "Session changes should have session_name"
+    );
+
+    // GET /api/sessions/api-session/live → verify live endpoint
+    let resp = client
+        .get(&format!("{}/api/sessions/api-session/live", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["changes"].as_array().is_some(), "Live should have changes");
 
     // POST /api/sessions/api-session/merge
     let resp = client

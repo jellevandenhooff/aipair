@@ -1,9 +1,9 @@
 import useSWR, { mutate } from 'swr';
 import {
   fetchChanges,
+  fetchSessionChanges,
   fetchDiff,
   fetchReview,
-  fetchTopics,
   fetchTodos,
   createReview,
   createTodo as apiCreateTodo,
@@ -16,9 +16,9 @@ import {
   mergeSession as apiMergeSession,
   type Change,
   type ChangesData,
+  type SessionChangesData,
   type DiffResponse,
   type Review,
-  type TopicsResponse,
   type TodoTree,
   type SessionSummary,
 } from './api';
@@ -42,23 +42,24 @@ export function useChangesIsValidating(): boolean {
   return isValidating;
 }
 
-// Hook for fetching topics (suspense mode)
-export function useTopics(): TopicsResponse {
-  const { data } = useSWR('topics', () => fetchTopics(), {
-    suspense: true,
-    refreshInterval: 3000,
-    revalidateOnFocus: false,
-  });
-  return data!;
+// Hook for fetching session-scoped changes
+// version: "live", "latest", or a push index (0 = oldest)
+export function useSessionChanges(name: string | null, version: string = 'live'): SessionChangesData | null {
+  const { data } = useSWR(
+    name ? ['session-changes', name, version] : null,
+    () => fetchSessionChanges(name!, version),
+    { suspense: true, refreshInterval: 3000, revalidateOnFocus: false }
+  );
+  return data ?? null;
 }
 
 // Hook for fetching diff (suspense mode - requires changeId)
-export function useDiff(changeId: string, commitId?: string, baseCommitId?: string): DiffResponse {
-  const key = ['diff', changeId, commitId ?? 'latest', baseCommitId ?? 'parent'];
+export function useDiff(changeId: string, commitId?: string, baseCommitId?: string, session?: string): DiffResponse {
+  const key = ['diff', changeId, commitId ?? 'latest', baseCommitId ?? 'parent', session ?? ''];
 
   const { data } = useSWR<DiffResponse>(
     key,
-    () => fetchDiff(changeId, commitId, baseCommitId),
+    () => fetchDiff(changeId, commitId, baseCommitId, session),
     {
       suspense: true,
       revalidateOnFocus: false,
@@ -161,4 +162,4 @@ export async function mergeSessionAction(name: string) {
 }
 
 // Re-export types for convenience
-export type { Change, ChangesData, DiffResponse, Review, TopicsResponse, TodoTree, SessionSummary };
+export type { Change, ChangesData, SessionChangesData, DiffResponse, Review, TodoTree, SessionSummary };

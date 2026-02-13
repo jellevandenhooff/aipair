@@ -3,7 +3,6 @@ import { VList, VListHandle } from 'virtua';
 import { Thread, Diff, Review, addComment, DiffChunk } from '../api';
 import { useAppContext } from '../context';
 import { replyToThread, resolveThread, reopenThread } from '../hooks';
-import { RevisionLabel } from './CommentPanel';
 import { mutate } from 'swr';
 
 export interface DiffViewerHandle {
@@ -217,8 +216,6 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
 ) {
   // Get UI state from context
   const {
-    selectedRevision,
-    comparisonBase,
     focusedPanel,
     selectedThreadId,
     replyingToThread,
@@ -227,7 +224,6 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
     newCommentText: commentText,
     setNewCommentText: setCommentText,
     clearNewComment,
-    setComparisonBase,
     startReply,
     cancelReply,
     setReplyText,
@@ -991,8 +987,6 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
       replyText,
       setReplyText,
       submittingReply,
-      selectedRevision,
-      comparisonBase,
     ]
   );
 
@@ -1000,43 +994,8 @@ export const DiffViewer = forwardRef<DiffViewerHandle, DiffViewerProps>(function
     return <div className="p-8 text-center text-gray-400">No diff content</div>;
   }
 
-  // Determine what we're showing
-  const latestRevision = review.revisions[review.revisions.length - 1];
-  const showingRevision = selectedRevision ?? latestRevision;
-  const isComparingRevisions = comparisonBase !== null;
-
   return (
     <div ref={containerRef} className="h-full font-mono text-sm flex flex-col" tabIndex={0}>
-      {/* Comparison header */}
-      {showingRevision && (() => {
-        const isPending = showingRevision.is_pending;
-        const bgClass = isComparingRevisions ? 'bg-purple-50 border-purple-200' : isPending ? 'bg-blue-50 border-blue-200' : 'bg-gray-50 border-gray-200';
-        const textClass = isComparingRevisions ? 'text-purple-700' : isPending ? 'text-blue-700' : 'text-gray-600';
-        const fromRevision = comparisonBase ?? 'base';
-
-        return (
-          <div className={`${bgClass} border-b px-4 py-2 flex items-center justify-between shrink-0`}>
-            <span className={`${textClass} text-sm`}>
-              {isComparingRevisions && 'Comparing '}
-              <span className="font-semibold"><RevisionLabel revision={fromRevision} /></span>
-              {' → '}
-              <span className="font-semibold"><RevisionLabel revision={showingRevision} /></span>
-              {!isPending && showingRevision.description && (
-                <span className="ml-2 text-gray-400">— {showingRevision.description}</span>
-              )}
-            </span>
-            {isComparingRevisions && (
-              <button
-                onClick={() => setComparisonBase(null)}
-                className="text-xs text-purple-600 hover:text-purple-800 underline"
-              >
-                Show full diff
-              </button>
-            )}
-          </div>
-        );
-      })()}
-
       <VList ref={listRef} className="flex-1" data={rows}>
         {renderRow}
       </VList>

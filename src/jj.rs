@@ -95,15 +95,18 @@ impl Jj {
 
     /// List recent changes across all heads
     pub fn log(&self, limit: usize) -> Result<Vec<Change>> {
-        // Use json(self) for proper escaping of description, append empty flag with tab separator
-        // Walk from all visible heads (not just @) to capture changes across branches/topics
+        self.log_revset(&format!("ancestors(visible_heads(), {limit})"))
+    }
+
+    /// List changes matching an arbitrary revset
+    pub fn log_revset(&self, revset: &str) -> Result<Vec<Change>> {
         let output = Command::new("jj")
             .current_dir(&self.repo_path)
             .args([
                 "log",
                 "--no-graph",
                 "-r",
-                &format!("ancestors(visible_heads(), {limit})"),
+                revset,
                 "-T",
                 r#"json(self) ++ "\t" ++ empty ++ "\t" ++ conflict ++ "\t" ++ self.current_working_copy() ++ "\t" ++ parents.map(|c| c.change_id()).join(",") ++ "\n""#,
             ])
@@ -373,7 +376,7 @@ impl Jj {
     pub fn move_bookmark(&self, name: &str, change_id: &str) -> Result<()> {
         let output = Command::new("jj")
             .current_dir(&self.repo_path)
-            .args(["bookmark", "set", name, "-r", change_id])
+            .args(["bookmark", "set", name, "-r", change_id, "--allow-backwards"])
             .output()
             .context("Failed to run jj bookmark set")?;
 
@@ -407,6 +410,24 @@ impl Jj {
         }
 
         Ok(Self::new(dest))
+    }
+
+    /// Set a config value in the repo-level config.
+    pub fn set_repo_config(&self, key: &str, value: &str) -> Result<()> {
+        let output = Command::new("jj")
+            .current_dir(&self.repo_path)
+            .args(["config", "set", "--repo", key, value])
+            .output()
+            .context("Failed to run jj config set")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "jj config set failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(())
     }
 
     pub fn git_push_bookmark(&self, bookmark: &str, allow_new: bool) -> Result<String> {
@@ -465,6 +486,19 @@ impl Jj {
         Ok(())
     }
 
+    /// Track a remote bookmark. Silently succeeds if already tracked or doesn't exist.
+    pub fn bookmark_track(&self, bookmark_remote: &str) -> Result<()> {
+        let output = Command::new("jj")
+            .current_dir(&self.repo_path)
+            .args(["bookmark", "track", bookmark_remote])
+            .output()
+            .context("Failed to run jj bookmark track")?;
+
+        // Ignore failures (e.g. bookmark doesn't exist on remote yet)
+        let _ = output;
+        Ok(())
+    }
+
     pub fn bookmark_delete(&self, name: &str) -> Result<()> {
         let output = Command::new("jj")
             .current_dir(&self.repo_path)
@@ -482,10 +516,10 @@ impl Jj {
         Ok(())
     }
 
-    pub fn new_change(&self, message: &str) -> Result<()> {
+    pub fn new_change(&self) -> Result<()> {
         let output = Command::new("jj")
             .current_dir(&self.repo_path)
-            .args(["new", "-m", message])
+            .args(["new"])
             .output()
             .context("Failed to run jj new")?;
 
@@ -499,10 +533,10 @@ impl Jj {
         Ok(())
     }
 
-    pub fn new_change_on(&self, revision: &str, message: &str) -> Result<()> {
+    pub fn new_change_on(&self, revision: &str) -> Result<()> {
         let output = Command::new("jj")
             .current_dir(&self.repo_path)
-            .args(["new", revision, "-m", message])
+            .args(["new", revision])
             .output()
             .context("Failed to run jj new")?;
 

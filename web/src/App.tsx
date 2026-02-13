@@ -2,15 +2,34 @@ import { Suspense, useEffect, useMemo } from 'react';
 import { ChangeList } from './components/ChangeList';
 import { SelectedChangeView } from './components/SelectedChangeView';
 import { TodoPanel } from './components/TodoPanel';
-import { SessionsPanel } from './components/SessionsPanel';
+import { SessionSidebar } from './components/SessionSidebar';
 import { TimelineView } from './components/TimelineView';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { useAppContext } from './context';
-import { useChanges } from './hooks';
+import { useChanges, useSessionChanges } from './hooks';
 
 // Inner component that needs changes data to find selected change
 function MainContent() {
-  const { changes } = useChanges();
+  const { selectedSessionName, selectedSessionVersion } = useAppContext();
+  const globalData = useChanges();
+
+  // Convert version for API: UI shows pushes reversed (newest first), API uses 0-indexed from oldest
+  const sessions = globalData.sessions;
+  const apiVersion = useMemo(() => {
+    if (selectedSessionVersion === 'live' || selectedSessionVersion === 'latest') return selectedSessionVersion;
+    const reversedIdx = parseInt(selectedSessionVersion, 10);
+    const session = sessions.find(s => s.name === selectedSessionName);
+    if (!session || isNaN(reversedIdx)) return 'live';
+    return String(session.pushes.length - 1 - reversedIdx);
+  }, [selectedSessionVersion, sessions, selectedSessionName]);
+
+  const sessionData = useSessionChanges(selectedSessionName, apiVersion);
+
+  // Use session changes when a session is selected, otherwise global
+  const changes = selectedSessionName
+    ? (sessionData?.changes ?? [])
+    : globalData.changes;
+
   const {
     selectedChangeId,
     selectChange,
@@ -33,7 +52,6 @@ function MainContent() {
       // Tab cycles through panels
       if (e.key === 'Tab') {
         e.preventDefault();
-        // We don't have direct access to thread count here, so assume threads exist if change selected
         cyclePanel(e.shiftKey, selectedChangeId !== null);
         return;
       }
@@ -79,23 +97,20 @@ function LoadingView({ message }: { message: string }) {
 
 export default function App() {
   const isTimeline = window.location.pathname === '/timeline';
-  const { setFocusedPanel, isSelectingChange, todoPanelVisible, toggleTodoPanel, sessionsPanelVisible, toggleSessionsPanel } = useAppContext();
+  const { setFocusedPanel, isSelectingChange, todoPanelVisible, toggleTodoPanel } = useAppContext();
 
-  // Global backtick toggle for todo panel, ~ for sessions panel
+  // Global backtick toggle for todo panel
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return;
       if (e.key === '`') {
         e.preventDefault();
         toggleTodoPanel();
-      } else if (e.key === '~') {
-        e.preventDefault();
-        toggleSessionsPanel();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [toggleTodoPanel, toggleSessionsPanel]);
+  }, [toggleTodoPanel]);
 
   if (isTimeline) {
     return <TimelineView />;
@@ -117,7 +132,12 @@ export default function App() {
           </div>
         )}
         <div className="flex flex-1 overflow-hidden">
-          {/* Change list sidebar */}
+          {/* Session sidebar */}
+          <Suspense fallback={<LoadingView message="" />}>
+            <SessionSidebar />
+          </Suspense>
+
+          {/* Change list */}
           <aside
             className="w-80 border-r border-gray-200 overflow-y-auto bg-gray-50"
             onClick={() => setFocusedPanel('changes')}
@@ -127,7 +147,7 @@ export default function App() {
             </Suspense>
           </aside>
 
-          {/* Main content - also wrapped in Suspense for change data */}
+          {/* Main content */}
           <Suspense fallback={<LoadingView message="Loading..." />}>
             <MainContent />
           </Suspense>
@@ -137,13 +157,6 @@ export default function App() {
         {todoPanelVisible && (
           <Suspense fallback={<LoadingView message="Loading todos..." />}>
             <TodoPanel />
-          </Suspense>
-        )}
-
-        {/* Sessions panel (collapsible bottom panel) */}
-        {sessionsPanelVisible && (
-          <Suspense fallback={<LoadingView message="Loading sessions..." />}>
-            <SessionsPanel />
           </Suspense>
         )}
       </div>

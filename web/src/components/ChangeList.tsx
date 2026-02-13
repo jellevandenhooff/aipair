@@ -1,34 +1,15 @@
 import { useRef, useEffect, useState, forwardRef, useMemo } from 'react';
 import { useAppContext } from '../context';
-import { useChanges, useTopics, type Change } from '../hooks';
-import type { Topic, GraphRow, PadLine } from '../types';
+import { useChanges, useSessionChanges, mergeSessionAction, type Change } from '../hooks';
+import type { GraphRow, PadLine } from '../types';
 import { GraphLane, COL_WIDTH } from './GraphLane';
 
 // Negative margin on the graph container bridges the 1px divide-y borders
 // so SVG lines connect between adjacent rows.
 const GRAPH_OVERLAP = 1; // px, must match divide-y border width
 
-// Stable color palette for topics
-const TOPIC_COLORS = [
-  '#3b82f6', // blue
-  '#8b5cf6', // violet
-  '#ec4899', // pink
-  '#f59e0b', // amber
-  '#10b981', // emerald
-  '#06b6d4', // cyan
-  '#f97316', // orange
-  '#6366f1', // indigo
-];
-
-function getTopicColor(index: number): string {
-  return TOPIC_COLORS[index % TOPIC_COLORS.length];
-}
-
-
 interface ChangeItemProps {
   change: Change;
-  topicSlug?: string;
-  topicColor?: string;
   isSelected: boolean;
   focused: boolean;
   isMain: boolean;
@@ -36,7 +17,7 @@ interface ChangeItemProps {
 }
 
 const ChangeItem = forwardRef<HTMLButtonElement, ChangeItemProps>(function ChangeItem(
-  { change, topicSlug, topicColor, isSelected, focused, isMain, onClick },
+  { change, isSelected, focused, isMain, onClick },
   ref
 ) {
   return (
@@ -61,14 +42,6 @@ const ChangeItem = forwardRef<HTMLButtonElement, ChangeItemProps>(function Chang
           <span className="font-mono text-xs font-bold text-blue-600">@</span>
         )}
         <span className="font-mono text-xs text-gray-400">{change.change_id.slice(0, 8)}</span>
-        {topicSlug && topicColor && (
-          <span className="text-xs font-medium" style={{ color: topicColor }}>{topicSlug}</span>
-        )}
-        {change.session_name && (
-          <span className="text-xs bg-indigo-100 text-indigo-700 px-1 py-0.5 rounded leading-none">
-            {change.session_name}
-          </span>
-        )}
         {isMain && (
           <span className="text-xs bg-green-100 text-green-700 px-1 py-0.5 rounded font-medium leading-none">
             main
@@ -93,18 +66,37 @@ const ChangeItem = forwardRef<HTMLButtonElement, ChangeItemProps>(function Chang
   );
 });
 
-type DisplayItem =
-  | { type: 'change'; change: Change; graphRow?: GraphRow; prevPadLines?: PadLine[] }
-  | { type: 'gap'; count: number };
+interface DisplayItem {
+  type: 'change';
+  change: Change;
+  graphRow?: GraphRow;
+  prevPadLines?: PadLine[];
+}
 
-export function ChangeList() {
-  const { changes, graph } = useChanges();
-  const { topics: topicsList } = useTopics();
+// --- Session view ---
 
-  const { focusedPanel, selectedChangeId, selectChange } = useAppContext();
+function SessionChangeList({ sessionName }: { sessionName: string }) {
+  const { focusedPanel, selectedChangeId, selectChange, selectSession, selectedSessionVersion, selectSessionVersion } = useAppContext();
   const focused = focusedPanel === 'changes';
+  const { sessions } = useChanges();
+  const selectedVersion = selectedSessionVersion;
+  const setSelectedVersion = selectSessionVersion;
 
-  const [filterTopicId, setFilterTopicId] = useState<string | null>(null);
+  const session = sessions.find(s => s.name === sessionName);
+
+  // Convert selectedVersion to API version string
+  // UI shows pushes reversed (newest first), API uses 0-indexed from oldest
+  const apiVersion = useMemo(() => {
+    if (selectedVersion === 'live' || selectedVersion === 'latest') return selectedVersion;
+    const reversedIdx = parseInt(selectedVersion, 10);
+    if (!session || isNaN(reversedIdx)) return 'live';
+    // Convert reversed index to original index (0 = oldest in API)
+    return String(session.pushes.length - 1 - reversedIdx);
+  }, [selectedVersion, session]);
+
+  const sessionData = useSessionChanges(sessionName, apiVersion);
+  const changes = sessionData?.changes ?? [];
+  const graph = sessionData?.graph ?? [];
 
   const changeRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
 
@@ -115,130 +107,70 @@ export function ChangeList() {
     }
   }, [selectedChangeId, focused]);
 
-  const topicById = useMemo(() => {
-    const map = new Map<string, Topic>();
-    for (const t of topicsList) map.set(t.id, t);
-    return map;
-  }, [topicsList]);
-
-  const topicColorMap = useMemo(() => {
-    const sorted = [...topicsList]
-      .filter(t => t.status !== 'finished')
-      .sort((a, b) => a.created_at.localeCompare(b.created_at));
-    const map = new Map<string, string>();
-    sorted.forEach((t, i) => map.set(t.id, getTopicColor(i)));
-    return map;
-  }, [topicsList]);
-
-  const activeTopics = useMemo(() => {
-    const unmergedTopicIds = new Set<string>();
-    for (const c of changes) {
-      if (!c.merged && c.topic_id) unmergedTopicIds.add(c.topic_id);
-    }
-    return topicsList
-      .filter(t => t.status !== 'finished' && unmergedTopicIds.has(t.id))
-      .sort((a, b) => a.created_at.localeCompare(b.created_at));
-  }, [topicsList, changes]);
-
   const maxCols = useMemo(
     () => Math.max(1, ...graph.map(r => r.node_line.length)),
     [graph]
   );
   const graphWidth = maxCols * COL_WIDTH;
 
-  if (changes.length === 0) {
-    return <div className="p-3 text-gray-400 text-sm">No changes found</div>;
-  }
-
-  const mainChangeId = changes.find(c => c.merged)?.change_id;
-
-  // Filter
-  const filteredChanges = filterTopicId
-    ? changes.filter(c => c.topic_id === filterTopicId || c.merged)
-    : changes;
-
-  const visibleIds = new Set(filteredChanges.map(c => c.change_id));
-  const changeIndexMap = new Map<string, number>();
-  changes.forEach((c, i) => changeIndexMap.set(c.change_id, i));
-
-  const graphByChange = new Map<string, GraphRow>();
-  const prevPadByChange = new Map<string, PadLine[]>();
-  for (let gi = 0; gi < graph.length; gi++) {
-    graphByChange.set(graph[gi].node, graph[gi]);
-    if (gi > 0) prevPadByChange.set(graph[gi].node, graph[gi - 1].pad_lines);
-  }
-
-  const items: DisplayItem[] = [];
-
-  for (let i = 0; i < filteredChanges.length; i++) {
-    const change = filteredChanges[i];
-    if (filterTopicId && i > 0) {
-      const prevIdx = changeIndexMap.get(filteredChanges[i - 1].change_id)!;
-      const currIdx = changeIndexMap.get(change.change_id)!;
-      let hiddenCount = 0;
-      for (let j = prevIdx + 1; j < currIdx; j++) {
-        if (!visibleIds.has(changes[j].change_id)) hiddenCount++;
-      }
-      if (hiddenCount > 0) items.push({ type: 'gap', count: hiddenCount });
+  const graphByChange = useMemo(() => {
+    const byChange = new Map<string, GraphRow>();
+    const prevPad = new Map<string, PadLine[]>();
+    for (let gi = 0; gi < graph.length; gi++) {
+      byChange.set(graph[gi].node, graph[gi]);
+      if (gi > 0) prevPad.set(graph[gi].node, graph[gi - 1].pad_lines);
     }
-    items.push({ type: 'change', change, graphRow: graphByChange.get(change.change_id), prevPadLines: prevPadByChange.get(change.change_id) });
-  }
+    return { byChange, prevPad };
+  }, [graph]);
+
+  // Parse base session name for "Based on" link
+  const baseSessionName = session?.base_bookmark.startsWith('session/')
+    ? session.base_bookmark.replace('session/', '')
+    : null;
 
   return (
     <div className="overflow-hidden">
-      {/* Topic filter chips */}
-      {activeTopics.length > 0 && (
-        <div className="px-2 py-1.5 border-b border-gray-200 flex flex-wrap gap-1">
+      {/* Session header with version selector */}
+      <div className="border-b border-gray-200 bg-white">
+        <div className="px-3 pt-2 pb-1">
+          <div className="font-medium text-sm">{sessionName}</div>
+        </div>
+        {/* Version selector: live + pushes */}
+        <div className="max-h-24 overflow-y-auto">
           <button
-            onClick={() => setFilterTopicId(null)}
-            className={`text-xs px-2 py-0.5 rounded-full transition-colors ${
-              filterTopicId === null
-                ? 'bg-gray-700 text-white'
-                : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+            onClick={() => setSelectedVersion('live')}
+            className={`w-full text-left text-xs px-3 py-1 truncate ${
+              selectedVersion === 'live'
+                ? 'bg-blue-100 text-blue-700 font-medium'
+                : 'text-gray-500 hover:bg-gray-100'
             }`}
           >
-            All
+            live
           </button>
-          {activeTopics.map(topic => {
-            const color = topicColorMap.get(topic.id);
-            const isActive = filterTopicId === topic.id;
-            return (
-              <button
-                key={topic.id}
-                onClick={() => setFilterTopicId(isActive ? null : topic.id)}
-                className="text-xs px-2 py-0.5 rounded-full transition-colors"
-                style={{
-                  backgroundColor: isActive ? color : undefined,
-                  color: isActive ? 'white' : color,
-                  border: `1px solid ${color}`,
-                }}
-              >
-                {topic.id}
-              </button>
-            );
-          })}
+          {session && [...session.pushes].reverse().map((push, i) => (
+            <button
+              key={push.commit_id}
+              onClick={() => setSelectedVersion(String(i))}
+              className={`w-full text-left text-xs px-3 py-1 truncate ${
+                selectedVersion === String(i)
+                  ? 'bg-blue-100 text-blue-700 font-medium'
+                  : 'text-gray-500 hover:bg-gray-100'
+              }`}
+              title={`${push.summary}\n${new Date(push.timestamp).toLocaleString()}\n${push.change_count} changes`}
+            >
+              {push.summary}
+            </button>
+          ))}
         </div>
-      )}
+      </div>
 
-      {/* Flat DAG list with divide-y; graph container uses negative margin to bridge borders */}
+      {/* Changes list with DAG graph */}
       <div className="divide-y divide-gray-200">
-        {items.map((item, idx) => {
-          if (item.type === 'gap') {
-            return (
-              <div
-                key={`gap-${idx}`}
-                className="flex items-center text-xs text-gray-400 italic py-1"
-              >
-                <div style={{ width: graphWidth }} className="flex-shrink-0" />
-                <div className="px-2">{item.count} hidden</div>
-              </div>
-            );
-          }
-          const { change, graphRow, prevPadLines } = item;
+        {changes.map(change => {
           const isSelected = selectedChangeId === change.change_id;
-          const isMain = change.change_id === mainChangeId;
-          const topic = change.topic_id ? topicById.get(change.topic_id) : undefined;
-          const topicColor = change.topic_id ? topicColorMap.get(change.topic_id) : undefined;
+          const graphRow = graphByChange.byChange.get(change.change_id);
+          const prevPadLines = graphByChange.prevPad.get(change.change_id);
+
           return (
             <div key={change.change_id} className="flex items-stretch">
               <div className="flex-shrink-0 relative" style={{ width: graphWidth }}>
@@ -255,8 +187,195 @@ export function ChangeList() {
                     else changeRefs.current.delete(change.change_id);
                   }}
                   change={change}
-                  topicSlug={topic?.id}
-                  topicColor={topicColor}
+                  isSelected={isSelected}
+                  focused={focused}
+                  isMain={false}
+                  onClick={() => selectChange(change.change_id)}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* "Based on" link + merge */}
+      {session && (
+        <SessionFooter
+          session={session}
+          sessionName={sessionName}
+          baseSessionName={baseSessionName}
+          selectSession={selectSession}
+        />
+      )}
+    </div>
+  );
+}
+
+function SessionFooter({
+  session,
+  sessionName,
+  baseSessionName,
+  selectSession,
+}: {
+  session: { pushes: Array<{ commit_id: string; change_count: number }>; base_bookmark: string };
+  sessionName: string;
+  baseSessionName: string | null;
+  selectSession: (name: string | null) => void;
+}) {
+  const { selectedSessionVersion } = useAppContext();
+  const [merging, setMerging] = useState(false);
+
+  // Always check live state for merge eligibility, independent of selected version
+  const liveData = useSessionChanges(sessionName, 'live');
+  const liveChanges = liveData?.changes ?? [];
+  const latestPush = session.pushes[session.pushes.length - 1];
+  const liveMatchesPushed = latestPush && liveChanges.length > 0 &&
+    latestPush.commit_id === liveChanges[0].commit_id;
+
+  // Only show "behind" on live or latest push (not old historical pushes)
+  const isLiveOrLatest = selectedSessionVersion === 'live' || selectedSessionVersion === '0';
+  const baseBehind = isLiveOrLatest &&
+    liveData != null &&
+    liveData.base_commit_id != null &&
+    liveData.base_current_commit_id != null &&
+    liveData.base_commit_id !== liveData.base_current_commit_id;
+
+  const canMerge = liveMatchesPushed && !baseBehind;
+
+  const handleMerge = async () => {
+    if (!confirm(`Merge session "${sessionName}" into its base?`)) return;
+    setMerging(true);
+    try {
+      const result = await mergeSessionAction(sessionName);
+      if (!result.success) alert(result.message);
+    } catch (err) {
+      alert(`Merge failed: ${err}`);
+    } finally {
+      setMerging(false);
+    }
+  };
+
+  // Show base commit from live data
+  const baseCommitShort = liveData?.base_commit_id?.slice(0, 12);
+
+  return (
+    <div className="border-t border-gray-200">
+      <div className="px-3 py-2 text-xs text-gray-500">
+        Based on:{' '}
+        {baseSessionName ? (
+          <button
+            className="text-blue-600 hover:underline"
+            onClick={() => selectSession(baseSessionName)}
+          >
+            session/{baseSessionName} ↗
+          </button>
+        ) : (
+          <button
+            className="text-blue-600 hover:underline"
+            onClick={() => selectSession(null)}
+          >
+            {session.base_bookmark} ↗
+          </button>
+        )}
+        {baseCommitShort && (
+          <span className="ml-1 font-mono text-gray-400">{baseCommitShort}</span>
+        )}
+        {baseBehind && (
+          <span className="ml-1 text-amber-600">· behind</span>
+        )}
+      </div>
+      <div className="px-3 pb-2">
+        <button
+          onClick={handleMerge}
+          disabled={merging || !canMerge}
+          className={`w-full px-3 py-1.5 text-sm rounded font-medium transition-colors ${
+            canMerge
+              ? 'bg-green-600 text-white hover:bg-green-700'
+              : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+          } disabled:opacity-50`}
+          title={
+            baseBehind ? 'Base has moved — pull to update before merging'
+              : !liveMatchesPushed ? 'Push changes before merging'
+              : `Merge ${sessionName} into ${session.base_bookmark}`
+          }
+        >
+          {merging ? 'Merging...' : 'Merge'}
+        </button>
+        {baseBehind && (
+          <p className="text-xs text-amber-600 mt-1">Base has moved — pull to update</p>
+        )}
+        {!baseBehind && !liveMatchesPushed && (
+          <p className="text-xs text-gray-400 mt-1">Push changes before merging</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// --- Main view (DAG graph) ---
+
+function MainChangeList() {
+  const { changes, graph } = useChanges();
+  const { focusedPanel, selectedChangeId, selectChange } = useAppContext();
+  const focused = focusedPanel === 'changes';
+  const changeRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
+
+  useEffect(() => {
+    if (selectedChangeId && focused) {
+      const el = changeRefs.current.get(selectedChangeId);
+      el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [selectedChangeId, focused]);
+
+  const maxCols = useMemo(
+    () => Math.max(1, ...graph.map(r => r.node_line.length)),
+    [graph]
+  );
+  const graphWidth = maxCols * COL_WIDTH;
+
+  if (changes.length === 0) {
+    return <div className="p-3 text-gray-400 text-sm">No changes found</div>;
+  }
+
+  const mainChangeId = changes.find(c => c.merged)?.change_id;
+
+  const graphByChange = new Map<string, GraphRow>();
+  const prevPadByChange = new Map<string, PadLine[]>();
+  for (let gi = 0; gi < graph.length; gi++) {
+    graphByChange.set(graph[gi].node, graph[gi]);
+    if (gi > 0) prevPadByChange.set(graph[gi].node, graph[gi - 1].pad_lines);
+  }
+
+  const items: DisplayItem[] = changes.map(change => ({
+    type: 'change' as const,
+    change,
+    graphRow: graphByChange.get(change.change_id),
+    prevPadLines: prevPadByChange.get(change.change_id),
+  }));
+
+  return (
+    <div className="overflow-hidden">
+      <div className="divide-y divide-gray-200">
+        {items.map((item) => {
+          const { change, graphRow, prevPadLines } = item;
+          const isSelected = selectedChangeId === change.change_id;
+          const isMain = change.change_id === mainChangeId;
+          return (
+            <div key={change.change_id} className="flex items-stretch">
+              <div className="flex-shrink-0 relative" style={{ width: graphWidth }}>
+                {graphRow && (
+                  <div className="absolute z-10" style={{ top: -GRAPH_OVERLAP, bottom: -GRAPH_OVERLAP, left: 0, right: 0 }}>
+                    <GraphLane row={graphRow} prevPadLines={prevPadLines} />
+                  </div>
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <ChangeItem
+                  ref={(el) => {
+                    if (el) changeRefs.current.set(change.change_id, el);
+                    else changeRefs.current.delete(change.change_id);
+                  }}
+                  change={change}
                   isSelected={isSelected}
                   focused={focused}
                   isMain={isMain}
@@ -269,4 +388,16 @@ export function ChangeList() {
       </div>
     </div>
   );
+}
+
+// --- Public entry point ---
+
+export function ChangeList() {
+  const { selectedSessionName } = useAppContext();
+
+  if (selectedSessionName) {
+    return <SessionChangeList sessionName={selectedSessionName} />;
+  }
+
+  return <MainChangeList />;
 }

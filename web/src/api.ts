@@ -1,8 +1,8 @@
 // Import types from generated types
-import type { Change, Diff, Review, TopicsResponse, GraphRow, TodoTree, SessionSummary } from './types';
+import type { Change, Diff, Review, GraphRow, TodoTree, SessionSummary } from './types';
 
 // Re-export types for consumers
-export type { Change, Diff, FileDiff, Review, Thread, Comment, Author, ThreadStatus, Topic, TopicsResponse, GraphRow, NodeLine, PadLine, TodoItem, TodoTree, SessionSummary } from './types';
+export type { Change, Diff, FileDiff, Review, Thread, Comment, Author, ThreadStatus, GraphRow, NodeLine, PadLine, TodoItem, TodoTree, SessionSummary } from './types';
 
 const API_BASE = '/api';
 
@@ -30,10 +30,11 @@ export interface DiffResponse {
   message_diff?: DiffChunk[];
 }
 
-export async function fetchDiff(changeId: string, commitId?: string, baseCommitId?: string): Promise<DiffResponse> {
+export async function fetchDiff(changeId: string, commitId?: string, baseCommitId?: string, session?: string): Promise<DiffResponse> {
   const params = new URLSearchParams();
   if (commitId) params.set('commit', commitId);
   if (baseCommitId) params.set('base', baseCommitId);
+  if (session) params.set('session', session);
   const query = params.toString();
   const url = query
     ? `${API_BASE}/changes/${changeId}/diff?${query}`
@@ -140,27 +141,6 @@ export async function mergeChange(changeId: string, force = false): Promise<Merg
   return data;
 }
 
-// Topic API functions
-
-export async function fetchTopics(): Promise<TopicsResponse> {
-  const res = await fetch(`${API_BASE}/topics`);
-  if (!res.ok) throw new Error(`Failed to fetch topics: ${res.statusText}`);
-  return res.json();
-}
-
-export async function finishTopic(topicId: string, force = false): Promise<MergeResult> {
-  const res = await fetch(`${API_BASE}/topics/${topicId}/finish`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ force }),
-  });
-  const data = await res.json();
-  if (!res.ok && !data.message) {
-    throw new Error(`Failed to finish topic: ${res.statusText}`);
-  }
-  return data;
-}
-
 // Todo API functions
 
 export async function fetchTodos(): Promise<TodoTree> {
@@ -215,6 +195,27 @@ export async function deleteTodo(id: string): Promise<TodoTree> {
 
 // Session API
 
+export interface SessionChangesData {
+  changes: Change[];
+  graph: GraphRow[];
+  base_commit_id: string | null;
+  base_current_commit_id: string | null;
+}
+
+// version: "live", "latest", or a push index (0 = oldest)
+export async function fetchSessionChanges(name: string, version: string = 'live'): Promise<SessionChangesData> {
+  const params = new URLSearchParams({ version });
+  const res = await fetch(`${API_BASE}/sessions/${name}/changes?${params}`);
+  if (!res.ok) throw new Error(`Failed to fetch session changes: ${res.statusText}`);
+  const data = await res.json();
+  return {
+    changes: data.changes,
+    graph: data.graph,
+    base_commit_id: data.base_commit_id ?? null,
+    base_current_commit_id: data.base_current_commit_id ?? null,
+  };
+}
+
 export async function mergeSession(name: string): Promise<MergeResult> {
   const res = await fetch(`${API_BASE}/sessions/${name}/merge`, {
     method: 'POST',
@@ -232,7 +233,6 @@ export async function mergeSession(name: string): Promise<MergeResult> {
 
 export interface TimelineEntry {
   timestamp: string;
-  topic_id?: string;
   type: 'ReviewComment' | 'ReviewReply' | 'ChatMessage' | 'CodeSnapshot';
   // ReviewComment fields
   change_id?: string;

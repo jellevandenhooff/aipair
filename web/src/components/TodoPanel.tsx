@@ -298,15 +298,8 @@ export function TodoPanel() {
                     className="flex-1 text-sm bg-white border border-blue-300 rounded px-1 py-0 outline-none"
                   />
                 ) : (
-                  <span className={`flex-1 truncate ${item.checked ? 'line-through text-gray-400' : ''} ${item.topic_id ? 'font-medium' : ''}`}>
+                  <span className={`flex-1 truncate ${item.checked ? 'line-through text-gray-400' : ''}`}>
                     {item.text || <span className="text-gray-300 italic">empty</span>}
-                  </span>
-                )}
-
-                {/* Topic badge */}
-                {item.topic_id && (
-                  <span className="ml-2 text-xs bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded leading-none flex-shrink-0">
-                    topic
                   </span>
                 )}
 

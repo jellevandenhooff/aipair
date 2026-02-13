@@ -1,12 +1,10 @@
 mod api;
 mod jj;
 mod line_mapper;
-mod mcp;
 mod review;
 mod session;
 mod timeline;
 mod todo;
-mod topic;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -23,7 +21,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start the web server (includes MCP endpoint at /mcp)
+    /// Start the web server
     Serve {
         #[arg(short, long)]
         port: Option<u16>,
@@ -39,6 +37,9 @@ enum Commands {
     Push {
         #[arg(short, long)]
         message: String,
+        /// Revision to set the session bookmark to before pushing
+        #[arg(long)]
+        rev: Option<String>,
     },
     /// Pull latest from main repo (from session clone)
     Pull,
@@ -104,8 +105,8 @@ async fn main() -> Result<()> {
                 session::session_merge(&name)?;
             }
         },
-        Commands::Push { message } => {
-            session::push(&message)?;
+        Commands::Push { message, rev } => {
+            session::push(&message, rev.as_deref())?;
         }
         Commands::Pull => {
             session::pull()?;

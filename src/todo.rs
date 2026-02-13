@@ -14,8 +14,6 @@ pub struct TodoItem {
     pub text: String,
     pub checked: bool,
     pub children: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub topic_id: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -78,7 +76,6 @@ impl TodoStore {
             text,
             checked: false,
             children: Vec::new(),
-            topic_id: None,
             created_at: Utc::now(),
         };
 
@@ -229,62 +226,6 @@ impl TodoStore {
         Ok(())
     }
 
-    /// Sync topic items: ensures each active topic has a corresponding todo item,
-    /// and auto-checks items for finished topics.
-    pub fn sync_topics(
-        &self,
-        tree: &mut TodoTree,
-        topics: &[crate::topic::Topic],
-    ) -> Result<bool> {
-        let mut changed = false;
-
-        for topic in topics {
-            // Find existing item for this topic
-            let existing_id = tree
-                .items
-                .iter()
-                .find(|(_, item)| item.topic_id.as_deref() == Some(&topic.id))
-                .map(|(id, _)| id.clone());
-
-            match existing_id {
-                Some(id) => {
-                    // Update checked state based on topic status
-                    let is_finished = topic.status == crate::topic::TopicStatus::Finished;
-                    let item = tree.items.get_mut(&id).unwrap();
-                    if item.checked != is_finished {
-                        item.checked = is_finished;
-                        changed = true;
-                    }
-                    // Update name if it changed
-                    if item.text != topic.name {
-                        item.text = topic.name.clone();
-                        changed = true;
-                    }
-                }
-                None => {
-                    // Create new item for this topic
-                    let id = uuid::Uuid::new_v4().to_string()[..8].to_string();
-                    let is_finished = topic.status == crate::topic::TopicStatus::Finished;
-                    let item = TodoItem {
-                        id: id.clone(),
-                        text: topic.name.clone(),
-                        checked: is_finished,
-                        children: Vec::new(),
-                        topic_id: Some(topic.id.clone()),
-                        created_at: Utc::now(),
-                    };
-                    tree.items.insert(id.clone(), item);
-                    tree.root_ids.push(id);
-                    changed = true;
-                }
-            }
-        }
-
-        if changed {
-            self.save(tree)?;
-        }
-        Ok(changed)
-    }
 }
 
 #[cfg(test)]
@@ -416,42 +357,4 @@ mod tests {
         assert_eq!(tree2.items[&id].text, "Persisted");
     }
 
-    #[test]
-    fn test_sync_topics() {
-        let (_dir, store) = setup();
-        let mut tree = store.load().unwrap();
-
-        let topics = vec![crate::topic::Topic {
-            id: "auth-flow".to_string(),
-            name: "Fix auth flow".to_string(),
-            base: "base123".to_string(),
-            changes: std::collections::HashSet::new(),
-            status: crate::topic::TopicStatus::Active,
-            created_at: Utc::now(),
-        }];
-
-        let changed = store.sync_topics(&mut tree, &topics).unwrap();
-        assert!(changed);
-        assert_eq!(tree.root_ids.len(), 1);
-
-        let topic_item = tree.items.values().find(|i| i.topic_id.as_deref() == Some("auth-flow")).unwrap();
-        assert_eq!(topic_item.text, "Fix auth flow");
-        assert!(!topic_item.checked);
-
-        // Sync again with finished topic
-        let topics = vec![crate::topic::Topic {
-            id: "auth-flow".to_string(),
-            name: "Fix auth flow".to_string(),
-            base: "base123".to_string(),
-            changes: std::collections::HashSet::new(),
-            status: crate::topic::TopicStatus::Finished,
-            created_at: Utc::now(),
-        }];
-
-        let changed = store.sync_topics(&mut tree, &topics).unwrap();
-        assert!(changed);
-
-        let topic_item = tree.items.values().find(|i| i.topic_id.as_deref() == Some("auth-flow")).unwrap();
-        assert!(topic_item.checked);
-    }
 }

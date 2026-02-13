@@ -10,7 +10,6 @@ export type { Review } from './Review';
 export type { Revision } from './Revision';
 export type { Thread } from './Thread';
 export type { ThreadStatus } from './ThreadStatus';
-export type { TopicStatus } from './TopicStatus';
 export type { TodoItem } from './TodoItem';
 export type { TodoTree } from './TodoTree';
 
@@ -23,8 +22,14 @@ export interface Change extends BaseChange {
   open_thread_count: number;
   revision_count: number;
   has_pending_changes: boolean;
-  topic_id?: string;
   session_name?: string;
+}
+
+export interface SessionPush {
+  summary: string;
+  commit_id: string;
+  timestamp: string;
+  change_count: number;
 }
 
 export interface SessionSummary {
@@ -32,6 +37,10 @@ export interface SessionSummary {
   status: string;
   push_count: number;
   last_push?: string;
+  base_bookmark: string;
+  open_thread_count: number;
+  change_count: number;
+  pushes: SessionPush[];
 }
 
 // DAG graph types (from sapling-renderdag via API)
@@ -48,23 +57,3 @@ export interface GraphRow {
   pad_lines: PadLine[];
 }
 
-// API response types for topics
-export interface TopicChangeInfo {
-  change_id: string;
-  description: string;
-  open_thread_count: number;
-}
-
-export interface Topic {
-  id: string;
-  name: string;
-  status: 'active' | 'finished';
-  change_count: number;
-  changes: TopicChangeInfo[];
-  notes?: string;
-  created_at: string;
-}
-
-export interface TopicsResponse {
-  topics: Topic[];
-}

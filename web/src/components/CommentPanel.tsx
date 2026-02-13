@@ -1,28 +1,7 @@
-import { useState, useRef, useEffect, forwardRef } from 'react';
-import { Thread, Revision } from '../types';
+import { useRef, useEffect, forwardRef } from 'react';
+import { Thread } from '../types';
 import { useAppContext } from '../context';
-import { replyToThread, resolveThread, reopenThread, mergeChange, type Change, type Review } from '../hooks';
-
-/** Displays a revision label: "base", "Pending abc1234", or "v3 abc1234" */
-export function RevisionLabel({ revision, showHash = true }: { revision: Revision | 'base'; showHash?: boolean }) {
-  if (revision === 'base') {
-    return <span className="font-mono">base</span>;
-  }
-  if (revision.is_pending) {
-    return (
-      <span className="font-mono">
-        Pending
-        {showHash && <span className="ml-1 text-gray-400">{revision.commit_id.slice(0, 7)}</span>}
-      </span>
-    );
-  }
-  return (
-    <span className="font-mono">
-      v{revision.number}
-      {showHash && <span className="ml-1 text-gray-400">{revision.commit_id.slice(0, 7)}</span>}
-    </span>
-  );
-}
+import { replyToThread, resolveThread, reopenThread, type Change, type Review } from '../hooks';
 
 interface CommentPanelProps {
   review: Review;
@@ -33,22 +12,14 @@ export function CommentPanel({ review, selectedChange }: CommentPanelProps) {
   const {
     focusedPanel,
     selectedThreadId,
-    selectedRevision,
     replyingToThread,
-    comparisonBase,
     startReply,
-    selectRevision,
-    setComparisonBase,
     navigateThreads,
   } = useAppContext();
   const threadsFocused = focusedPanel === 'threads';
-  const revisionsFocused = focusedPanel === 'revisions';
-
-  const [merging, setMerging] = useState(false);
 
   const replyInputRef = useRef<HTMLTextAreaElement>(null);
   const threadRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  const revisionRefs = useRef<Map<number, HTMLButtonElement>>(new Map());
 
   // Scroll selected thread into view when it changes
   useEffect(() => {
@@ -57,54 +28,6 @@ export function CommentPanel({ review, selectedChange }: CommentPanelProps) {
       el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
   }, [selectedThreadId, threadsFocused]);
-
-  // Scroll selected revision into view when it changes
-  useEffect(() => {
-    if (selectedRevision && revisionsFocused) {
-      const el = revisionRefs.current.get(selectedRevision.number);
-      el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
-  }, [selectedRevision, revisionsFocused]);
-
-  // Keyboard navigation for revisions panel
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return;
-      if (!revisionsFocused) return;
-
-      // Get revisions in display order (reversed, newest first)
-      const revisions = [...review.revisions].reverse();
-      if (revisions.length === 0) return;
-
-      // Find current index based on selectedRevision
-      const validSelectedRevision = selectedRevision &&
-        review.revisions.some(r => r.commit_id === selectedRevision.commit_id)
-        ? selectedRevision
-        : null;
-      const effectiveRevision = validSelectedRevision ?? revisions[0];
-      const currentIdx = revisions.findIndex(r => r.number === effectiveRevision?.number);
-
-      if (e.key === 'j' || e.key === 'ArrowDown') {
-        e.preventDefault();
-        const nextIdx = Math.min(currentIdx + 1, revisions.length - 1);
-        if (nextIdx !== currentIdx) {
-          selectRevision(revisions[nextIdx]);
-        }
-        return;
-      }
-      if (e.key === 'k' || e.key === 'ArrowUp') {
-        e.preventDefault();
-        const nextIdx = Math.max(currentIdx - 1, 0);
-        if (nextIdx !== currentIdx) {
-          selectRevision(revisions[nextIdx]);
-        }
-        return;
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [revisionsFocused, selectedRevision, review.revisions, selectRevision]);
 
   // Keyboard navigation for threads panel
   useEffect(() => {
@@ -175,25 +98,6 @@ export function CommentPanel({ review, selectedChange }: CommentPanelProps) {
     }
   }, [replyingToThread, threadsFocused]);
 
-  const handleMerge = async (force = false) => {
-    setMerging(true);
-    try {
-      const result = await mergeChange(selectedChange.change_id, force);
-      if (!result.success) {
-        console.error('Merge failed:', result.message);
-      }
-    } catch (e) {
-      console.error('Merge failed:', e);
-    } finally {
-      setMerging(false);
-    }
-  };
-
-  const handleCompareRevisions = (fromRev: Revision | null, toRev: Revision | null) => {
-    selectRevision(toRev);
-    setComparisonBase(fromRev);
-  };
-
   const openThreads = review.threads.filter((t) => t.status === 'open');
   // Sort resolved threads by revision (newest first), then by id for stable ordering
   const resolvedThreads = review.threads
@@ -206,124 +110,9 @@ export function CommentPanel({ review, selectedChange }: CommentPanelProps) {
       return b.id.localeCompare(a.id); // stable secondary sort
     });
   const totalThreads = review.threads.length;
-  const hasOpenThreads = openThreads.length > 0;
-  const hasNoDescription = !selectedChange.description?.trim();
 
   return (
     <div className="divide-y divide-gray-200">
-      {/* Merge section */}
-      <div className="p-4">
-        {selectedChange.merged ? (
-          <div className="text-sm text-green-600 font-medium">✓ Merged</div>
-        ) : (
-          <>
-            <button
-              onClick={() => handleMerge(false)}
-              disabled={merging || hasNoDescription}
-              className={`w-full px-4 py-2 rounded font-medium transition-colors ${
-                hasOpenThreads || selectedChange.has_pending_changes || hasNoDescription
-                  ? 'bg-gray-100 text-gray-500 hover:bg-gray-200'
-                  : 'bg-green-600 text-white hover:bg-green-700'
-              } disabled:opacity-50`}
-            >
-              {merging ? 'Merging...' : 'Merge'}
-            </button>
-            {hasNoDescription && (
-              <p className="text-xs text-red-600 mt-2">
-                No commit message. Use <code className="bg-gray-100 px-1 rounded">jj describe -m "..."</code> to set one.
-              </p>
-            )}
-            {!hasNoDescription && selectedChange.has_pending_changes && (
-              <p className="text-xs text-blue-600 mt-2">
-                Pending changes not recorded as a revision.{' '}
-                <button
-                  onClick={() => handleMerge(true)}
-                  disabled={merging}
-                  className="underline hover:text-blue-700"
-                >
-                  Force merge
-                </button>
-              </p>
-            )}
-            {!hasNoDescription && hasOpenThreads && !selectedChange.has_pending_changes && (
-              <p className="text-xs text-amber-600 mt-2">
-                {openThreads.length} open thread{openThreads.length !== 1 ? 's' : ''} remaining.{' '}
-                <button
-                  onClick={() => handleMerge(true)}
-                  disabled={merging}
-                  className="underline hover:text-amber-700"
-                >
-                  Force merge
-                </button>
-              </p>
-            )}
-          </>
-        )}
-      </div>
-
-      {/* Revisions section - always show when review has revisions */}
-      {review.revisions.length > 0 && (
-        <div className={`p-4 ${revisionsFocused ? 'bg-blue-50/50' : ''}`}>
-          <h3 className="font-semibold text-sm text-gray-700 mb-2">
-            Revisions ({review.revisions.filter(r => !r.is_pending).length})
-          </h3>
-          <div className="space-y-1">
-            {[...review.revisions].reverse().map((rev, idx, arr) => {
-              const prevRev = arr[idx + 1]; // Previous revision in display order (lower number)
-              // Validate selectedRevision belongs to this review (by commit_id)
-              const validSelectedRevision = selectedRevision &&
-                review.revisions.some(r => r.commit_id === selectedRevision.commit_id)
-                ? selectedRevision
-                : null;
-              const effectiveSelected = validSelectedRevision ?? review.revisions[review.revisions.length - 1];
-              const isSelected = effectiveSelected?.number === rev.number && !comparisonBase;
-              const isComparing = prevRev &&
-                comparisonBase?.number === prevRev.number &&
-                effectiveSelected?.number === rev.number;
-
-              return (
-                <div key={`${review.change_id}-${rev.number}`} className="flex items-center gap-1">
-                  <button
-                    ref={(el) => {
-                      if (el) revisionRefs.current.set(rev.number, el);
-                      else revisionRefs.current.delete(rev.number);
-                    }}
-                    onClick={() => selectRevision(rev)}
-                    className={`flex-1 text-left px-2 py-1 text-xs rounded transition-colors truncate ${
-                      isSelected && revisionsFocused
-                        ? 'bg-blue-100 text-blue-800 ring-2 ring-blue-300'
-                        : isSelected
-                          ? 'bg-blue-100 text-blue-800'
-                          : rev.is_pending
-                            ? 'hover:bg-gray-100 text-blue-600'
-                            : 'hover:bg-gray-100 text-gray-600'
-                    }`}
-                  >
-                    <RevisionLabel revision={rev} />
-                    {!rev.is_pending && rev.description && (
-                      <span className="ml-2">{rev.description}</span>
-                    )}
-                  </button>
-                  {prevRev && !prevRev.is_pending && (
-                    <button
-                      onClick={() => handleCompareRevisions(prevRev, rev)}
-                      title={`Compare v${prevRev.number} → ${rev.is_pending ? 'pending' : `v${rev.number}`}`}
-                      className={`px-1.5 py-1 text-xs rounded transition-colors ${
-                        isComparing
-                          ? 'bg-purple-100 text-purple-800'
-                          : 'hover:bg-gray-100 text-gray-400 hover:text-gray-600'
-                      }`}
-                    >
-                      Δ
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
       {/* Comments header */}
       <div className={`p-4 ${threadsFocused ? 'bg-blue-50/50' : ''}`}>
         <h3 className="font-semibold text-sm text-gray-700">Comments ({totalThreads})</h3>
