@@ -63,7 +63,12 @@ enum Commands {
 #[derive(Subcommand)]
 enum SessionCommands {
     /// Create a new session (clone + setup)
-    New { name: String },
+    New {
+        name: String,
+        /// Base bookmark to branch from (default: main)
+        #[arg(long, default_value = "main")]
+        base: String,
+    },
     /// List all sessions
     List,
     /// Merge a session into main
@@ -89,8 +94,8 @@ async fn main() -> Result<()> {
             init()?;
         }
         Commands::Session { command } => match command {
-            SessionCommands::New { name } => {
-                session::session_new(&name)?;
+            SessionCommands::New { name, base } => {
+                session::session_new(&name, &base)?;
             }
             SessionCommands::List => {
                 session::session_list()?;

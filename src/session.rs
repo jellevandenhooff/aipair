@@ -16,11 +16,17 @@ pub struct Session {
     pub clone_path: String,
     pub bookmark: String,
     pub base_change_id: String,
+    #[serde(default = "default_base_bookmark")]
+    pub base_bookmark: String,
     pub status: SessionStatus,
     pub created_at: DateTime<Utc>,
     pub pushes: Vec<PushEvent>,
     #[serde(default)]
     pub changes: Vec<String>,
+}
+
+fn default_base_bookmark() -> String {
+    "main".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -138,7 +144,7 @@ pub fn detect_context() -> Result<SessionContext> {
 
 // --- Operations ---
 
-pub fn session_new(name: &str) -> Result<()> {
+pub fn session_new(name: &str, base_bookmark: &str) -> Result<()> {
     // Validate name
     if !name
         .chars()
@@ -156,11 +162,11 @@ pub fn session_new(name: &str) -> Result<()> {
         anyhow::bail!("Session '{name}' already exists");
     }
 
-    // Get current main change_id for base
+    // Get current base change_id
     let base_change_id = jj
-        .get_bookmark("main")
-        .context("Failed to find 'main' bookmark")?
-        .context("No 'main' bookmark found — is this an aipair repo?")?;
+        .get_bookmark(base_bookmark)
+        .with_context(|| format!("Failed to find '{base_bookmark}' bookmark"))?
+        .with_context(|| format!("No '{base_bookmark}' bookmark found"))?;
 
     // Clone
     let clone_rel = format!(".aipair/sessions/{name}/repo");
@@ -172,8 +178,8 @@ pub fn session_new(name: &str) -> Result<()> {
     println!("Cloning into {}...", clone_path.display());
     let clone_jj = Jj::git_clone(&repo_path, &clone_path)?;
 
-    // The clone's WC lands on root, not main. Create a new change on top of main@origin.
-    clone_jj.new_change_on("main@origin", name)?;
+    // The clone's WC lands on root, not main. Create a new change on top of base@origin.
+    clone_jj.new_change_on(&format!("{base_bookmark}@origin"), name)?;
 
     // Create bookmark in clone
     let bookmark = format!("session/{name}");
@@ -196,6 +202,7 @@ pub fn session_new(name: &str) -> Result<()> {
         clone_path: clone_rel.clone(),
         bookmark: bookmark.clone(),
         base_change_id,
+        base_bookmark: base_bookmark.to_string(),
         status: SessionStatus::Active,
         created_at: Utc::now(),
         pushes: Vec::new(),
@@ -266,7 +273,8 @@ pub fn push(message: &str) -> Result<()> {
     });
 
     // Record all session change_ids (from clone's perspective)
-    session.changes = jj.query_change_ids("main@origin..@")?;
+    let base_ref = format!("{}@origin..@", session.base_bookmark);
+    session.changes = jj.query_change_ids(&base_ref)?;
 
     store.save(&session)?;
 
@@ -283,16 +291,23 @@ pub fn pull() -> Result<()> {
         }
     };
 
+    // Load session metadata to get base_bookmark
+    let main_repo_path = PathBuf::from(&marker.main_repo);
+    let store = SessionStore::new(&main_repo_path);
+    let session = store
+        .get(&marker.session_name)?
+        .context("Session metadata not found")?;
+    let base_ref = format!("{}@origin", session.base_bookmark);
+
     println!("Fetching from origin...");
     let fetch_output = jj.git_fetch()?;
     if !fetch_output.is_empty() {
         print!("{fetch_output}");
     }
 
-    // Check if main moved — try rebasing onto latest main
-    // In a clone, main is only available as main@origin
-    println!("Rebasing onto main@origin...");
-    let rebase_output = jj.rebase("@", "main@origin")?;
+    // Rebase onto the base ref (could be main@origin or another session's bookmark)
+    println!("Rebasing onto {base_ref}...");
+    let rebase_output = jj.rebase("@", &base_ref)?;
     if !rebase_output.is_empty() {
         print!("{rebase_output}");
     }
@@ -340,8 +355,12 @@ pub fn session_merge(name: &str) -> Result<()> {
         .get_bookmark(bookmark)?
         .context(format!("Bookmark '{bookmark}' not found — was it pushed?"))?;
 
-    println!("Moving main to {bookmark} (change {})...", &session_tip[..12]);
-    jj.move_bookmark("main", &session_tip)?;
+    println!(
+        "Moving {} to {bookmark} (change {})...",
+        session.base_bookmark,
+        &session_tip[..12]
+    );
+    jj.move_bookmark(&session.base_bookmark, &session_tip)?;
 
     // Delete session bookmark
     jj.bookmark_delete(bookmark)?;
@@ -350,9 +369,29 @@ pub fn session_merge(name: &str) -> Result<()> {
     session.status = SessionStatus::Merged;
     store.save(&session)?;
 
+    // Re-parent child sessions that were stacked on this session's bookmark
+    let all_sessions = store.list()?;
+    for mut child in all_sessions {
+        if child.status == SessionStatus::Active && child.base_bookmark == session.bookmark {
+            child.base_bookmark = session.base_bookmark.clone();
+            store.save(&child)?;
+            println!(
+                "  Re-parented session '{}' onto {}",
+                child.name, child.base_bookmark
+            );
+        }
+    }
+
     println!();
-    println!("Session '{name}' merged into main!");
-    println!("  main now at change {}", &session_tip[..12]);
+    println!(
+        "Session '{name}' merged into {}!",
+        session.base_bookmark
+    );
+    println!(
+        "  {} now at change {}",
+        session.base_bookmark,
+        &session_tip[..12]
+    );
 
     Ok(())
 }
@@ -373,10 +412,10 @@ pub fn session_list() -> Result<()> {
     }
 
     println!(
-        "{:<20} {:<8} {:<8} {:<30}",
-        "NAME", "STATUS", "PUSHES", "LAST PUSH"
+        "{:<20} {:<8} {:<15} {:<8} {:<25}",
+        "NAME", "STATUS", "BASE", "PUSHES", "LAST PUSH"
     );
-    println!("{}", "-".repeat(70));
+    println!("{}", "-".repeat(80));
 
     for s in &sessions {
         let status = match s.status {
@@ -388,16 +427,17 @@ pub fn session_list() -> Result<()> {
             .last()
             .map(|p| p.summary.as_str())
             .unwrap_or("-");
-        // Truncate last_push to 30 chars
-        let last_push_display = if last_push.len() > 30 {
-            format!("{}...", &last_push[..27])
+        // Truncate last_push to 25 chars
+        let last_push_display = if last_push.len() > 25 {
+            format!("{}...", &last_push[..22])
         } else {
             last_push.to_string()
         };
         println!(
-            "{:<20} {:<8} {:<8} {:<30}",
+            "{:<20} {:<8} {:<15} {:<8} {:<25}",
             s.name,
             status,
+            s.base_bookmark,
             s.pushes.len(),
             last_push_display,
         );
@@ -512,5 +552,184 @@ pub fn respond(change_id: &str, thread_id: &str, message: &str, resolve: bool) -
     let status = if resolve { " and resolved" } else { "" };
     println!("Responded to thread {}{status}.", &thread_id[..8.min(thread_id.len())]);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn make_session(name: &str, base_bookmark: &str, status: SessionStatus) -> Session {
+        Session {
+            name: name.to_string(),
+            clone_path: format!(".aipair/sessions/{name}/repo"),
+            bookmark: format!("session/{name}"),
+            base_change_id: "abc123".to_string(),
+            base_bookmark: base_bookmark.to_string(),
+            status,
+            created_at: Utc::now(),
+            pushes: Vec::new(),
+            changes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_base_bookmark_defaults_to_main_on_deserialize() {
+        // Simulate an old session JSON without base_bookmark
+        let json = r#"{
+            "name": "old-session",
+            "clone_path": ".aipair/sessions/old-session/repo",
+            "bookmark": "session/old-session",
+            "base_change_id": "abc123",
+            "status": "active",
+            "created_at": "2025-01-01T00:00:00Z",
+            "pushes": [],
+            "changes": []
+        }"#;
+
+        let session: Session = serde_json::from_str(json).unwrap();
+        assert_eq!(session.base_bookmark, "main");
+    }
+
+    #[test]
+    fn test_base_bookmark_preserved_on_roundtrip() {
+        let session = make_session("child", "session/parent", SessionStatus::Active);
+        let json = serde_json::to_string(&session).unwrap();
+        let deserialized: Session = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.base_bookmark, "session/parent");
+    }
+
+    #[test]
+    fn test_session_store_save_and_get() {
+        let dir = TempDir::new().unwrap();
+        let store = SessionStore::new(dir.path());
+
+        let session = make_session("test-session", "main", SessionStatus::Active);
+        store.save(&session).unwrap();
+
+        let loaded = store.get("test-session").unwrap().unwrap();
+        assert_eq!(loaded.name, "test-session");
+        assert_eq!(loaded.base_bookmark, "main");
+        assert_eq!(loaded.status, SessionStatus::Active);
+    }
+
+    #[test]
+    fn test_session_store_get_nonexistent() {
+        let dir = TempDir::new().unwrap();
+        let store = SessionStore::new(dir.path());
+
+        assert!(store.get("nonexistent").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_session_store_list_sorted_by_created_at() {
+        let dir = TempDir::new().unwrap();
+        let store = SessionStore::new(dir.path());
+
+        // Create sessions with different timestamps (save order shouldn't matter)
+        let mut s2 = make_session("beta", "main", SessionStatus::Active);
+        s2.created_at = Utc::now();
+        store.save(&s2).unwrap();
+
+        let mut s1 = make_session("alpha", "main", SessionStatus::Active);
+        s1.created_at = s2.created_at - chrono::Duration::seconds(10);
+        store.save(&s1).unwrap();
+
+        let sessions = store.list().unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].name, "alpha");
+        assert_eq!(sessions[1].name, "beta");
+    }
+
+    #[test]
+    fn test_session_store_with_stacked_base_bookmark() {
+        let dir = TempDir::new().unwrap();
+        let store = SessionStore::new(dir.path());
+
+        let parent = make_session("parent", "main", SessionStatus::Active);
+        store.save(&parent).unwrap();
+
+        let child = make_session("child", "session/parent", SessionStatus::Active);
+        store.save(&child).unwrap();
+
+        let loaded = store.get("child").unwrap().unwrap();
+        assert_eq!(loaded.base_bookmark, "session/parent");
+    }
+
+    #[test]
+    fn test_reparent_children_on_merge() {
+        let dir = TempDir::new().unwrap();
+        let store = SessionStore::new(dir.path());
+
+        // Set up: parent based on main, child based on parent, grandchild based on child
+        let parent = make_session("parent", "main", SessionStatus::Active);
+        store.save(&parent).unwrap();
+
+        let child = make_session("child", "session/parent", SessionStatus::Active);
+        store.save(&child).unwrap();
+
+        let grandchild = make_session("grandchild", "session/child", SessionStatus::Active);
+        store.save(&grandchild).unwrap();
+
+        // Simulate merging parent: mark as merged and re-parent children
+        let mut parent = store.get("parent").unwrap().unwrap();
+        parent.status = SessionStatus::Merged;
+        store.save(&parent).unwrap();
+
+        let all_sessions = store.list().unwrap();
+        for mut s in all_sessions {
+            if s.status == SessionStatus::Active && s.base_bookmark == parent.bookmark {
+                s.base_bookmark = parent.base_bookmark.clone();
+                store.save(&s).unwrap();
+            }
+        }
+
+        // child should now point to main (was session/parent)
+        let child = store.get("child").unwrap().unwrap();
+        assert_eq!(child.base_bookmark, "main");
+
+        // grandchild should still point to session/child (not directly affected)
+        let grandchild = store.get("grandchild").unwrap().unwrap();
+        assert_eq!(grandchild.base_bookmark, "session/child");
+    }
+
+    #[test]
+    fn test_reparent_does_not_affect_merged_sessions() {
+        let dir = TempDir::new().unwrap();
+        let store = SessionStore::new(dir.path());
+
+        let parent = make_session("parent", "main", SessionStatus::Active);
+        store.save(&parent).unwrap();
+
+        // A merged session that happened to be based on parent
+        let mut old_child = make_session("old-child", "session/parent", SessionStatus::Merged);
+        old_child.status = SessionStatus::Merged;
+        store.save(&old_child).unwrap();
+
+        // Simulate merging parent
+        let mut parent = store.get("parent").unwrap().unwrap();
+        parent.status = SessionStatus::Merged;
+        store.save(&parent).unwrap();
+
+        let all_sessions = store.list().unwrap();
+        for mut s in all_sessions {
+            if s.status == SessionStatus::Active && s.base_bookmark == parent.bookmark {
+                s.base_bookmark = parent.base_bookmark.clone();
+                store.save(&s).unwrap();
+            }
+        }
+
+        // old-child should NOT be re-parented (it's merged, not active)
+        let old_child = store.get("old-child").unwrap().unwrap();
+        assert_eq!(old_child.base_bookmark, "session/parent");
+    }
+
+    #[test]
+    fn test_session_list_empty() {
+        let dir = TempDir::new().unwrap();
+        let store = SessionStore::new(dir.path());
+        let sessions = store.list().unwrap();
+        assert!(sessions.is_empty());
+    }
 }
 

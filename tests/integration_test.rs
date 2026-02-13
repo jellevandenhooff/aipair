@@ -447,7 +447,7 @@ fn test_session_lifecycle() {
     let clone_dir = main_dir.join(".aipair/sessions/test-session/repo");
     assert!(clone_dir.exists(), "Clone directory should exist");
     assert!(
-        clone_dir.join(".aipair-session.json").exists(),
+        clone_dir.join(".aipair/session.json").exists(),
         "Marker file should exist"
     );
 
