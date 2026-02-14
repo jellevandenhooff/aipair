@@ -25,11 +25,17 @@ export interface Change extends BaseChange {
   session_name?: string;
 }
 
+export interface PushChangeSnapshot {
+  change_id: string;
+  commit_id: string;
+}
+
 export interface SessionPush {
   summary: string;
   commit_id: string;
   timestamp: string;
   change_count: number;
+  changes: PushChangeSnapshot[];
 }
 
 export interface SessionSummary {
@@ -41,6 +47,7 @@ export interface SessionSummary {
   open_thread_count: number;
   change_count: number;
   pushes: SessionPush[];
+  pushed_clean: boolean;
 }
 
 // DAG graph types (from sapling-renderdag via API)

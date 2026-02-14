@@ -8,16 +8,20 @@ import { GraphLane, COL_WIDTH } from './GraphLane';
 // so SVG lines connect between adjacent rows.
 const GRAPH_OVERLAP = 1; // px, must match divide-y border width
 
+// 'modified' = commit changed between pushes, 'new' = not in base push, null = no interdiff or unchanged
+type InterdiffStatus = 'modified' | 'new' | null;
+
 interface ChangeItemProps {
   change: Change;
   isSelected: boolean;
   focused: boolean;
   isMain: boolean;
+  interdiffStatus?: InterdiffStatus;
   onClick: () => void;
 }
 
 const ChangeItem = forwardRef<HTMLButtonElement, ChangeItemProps>(function ChangeItem(
-  { change, isSelected, focused, isMain, onClick },
+  { change, isSelected, focused, isMain, interdiffStatus, onClick },
   ref
 ) {
   return (
@@ -31,10 +35,18 @@ const ChangeItem = forwardRef<HTMLButtonElement, ChangeItemProps>(function Chang
             ? 'bg-blue-50 hover:bg-blue-100'
             : change.merged
               ? 'hover:bg-gray-100 opacity-60'
-              : 'hover:bg-gray-100'
+              : interdiffStatus === null
+                ? 'hover:bg-gray-100 opacity-40'
+                : 'hover:bg-gray-100'
       }`}
     >
       <div className="flex items-center gap-1.5">
+        {interdiffStatus === 'modified' && (
+          <span className="font-mono text-xs font-bold text-purple-600">~</span>
+        )}
+        {interdiffStatus === 'new' && (
+          <span className="font-mono text-xs font-bold text-green-600">+</span>
+        )}
         {change.conflict && (
           <span className="font-mono text-xs font-bold text-red-600">x</span>
         )}
@@ -76,7 +88,7 @@ interface DisplayItem {
 // --- Session view ---
 
 function SessionChangeList({ sessionName }: { sessionName: string }) {
-  const { focusedPanel, selectedChangeId, selectChange, selectSession, selectedSessionVersion, selectSessionVersion } = useAppContext();
+  const { focusedPanel, selectedChangeId, selectChange, selectSession, selectedSessionVersion, selectSessionVersion, interdiffActive, setInterdiffActive } = useAppContext();
   const focused = focusedPanel === 'changes';
   const { sessions } = useChanges();
   const selectedVersion = selectedSessionVersion;
@@ -123,6 +135,36 @@ function SessionChangeList({ sessionName }: { sessionName: string }) {
     return { byChange, prevPad };
   }, [graph]);
 
+  // Compute interdiff: find the base push for comparison
+  // For live → base is latest push; for push i → base is push i+1 (older)
+  const interdiffBasePush = useMemo(() => {
+    if (!interdiffActive || !session) return null;
+    const reversedPushes = [...session.pushes].reverse();
+    if (selectedVersion === 'live') {
+      return reversedPushes[0] ?? null; // latest push
+    }
+    const idx = parseInt(selectedVersion, 10);
+    if (isNaN(idx)) return null;
+    return reversedPushes[idx + 1] ?? null;
+  }, [interdiffActive, session, selectedVersion]);
+
+  const interdiffMap = useMemo(() => {
+    if (!interdiffBasePush) return null;
+    const baseCommits = new Map(interdiffBasePush.changes.map(c => [c.change_id, c.commit_id]));
+    const result = new Map<string, InterdiffStatus>();
+    for (const change of changes) {
+      const baseCommit = baseCommits.get(change.change_id);
+      if (!baseCommit) {
+        result.set(change.change_id, 'new');
+      } else if (baseCommit !== change.commit_id) {
+        result.set(change.change_id, 'modified');
+      } else {
+        result.set(change.change_id, null);
+      }
+    }
+    return result;
+  }, [interdiffBasePush, changes]);
+
   // Parse base session name for "Based on" link
   const baseSessionName = session?.base_bookmark.startsWith('session/')
     ? session.base_bookmark.replace('session/', '')
@@ -137,30 +179,77 @@ function SessionChangeList({ sessionName }: { sessionName: string }) {
         </div>
         {/* Version selector: live + pushes */}
         <div className="max-h-24 overflow-y-auto">
-          <button
-            onClick={() => setSelectedVersion('live')}
-            className={`w-full text-left text-xs px-3 py-1 truncate ${
-              selectedVersion === 'live'
-                ? 'bg-blue-100 text-blue-700 font-medium'
-                : 'text-gray-500 hover:bg-gray-100'
-            }`}
-          >
-            live
-          </button>
-          {session && [...session.pushes].reverse().map((push, i) => (
+          <div className="flex items-center">
             <button
-              key={push.commit_id}
-              onClick={() => setSelectedVersion(String(i))}
-              className={`w-full text-left text-xs px-3 py-1 truncate ${
-                selectedVersion === String(i)
+              onClick={() => {
+                setSelectedVersion('live');
+                setInterdiffActive(false);
+              }}
+              className={`flex-1 text-left text-xs px-3 py-1 truncate ${
+                selectedVersion === 'live' && !interdiffActive
                   ? 'bg-blue-100 text-blue-700 font-medium'
                   : 'text-gray-500 hover:bg-gray-100'
               }`}
-              title={`${push.summary}\n${new Date(push.timestamp).toLocaleString()}\n${push.change_count} changes`}
             >
-              {push.summary}
+              live
             </button>
-          ))}
+            {session && session.pushes.length > 0 && (
+              <button
+                onClick={() => {
+                  setSelectedVersion('live');
+                  setInterdiffActive(selectedVersion === 'live' ? !interdiffActive : true);
+                }}
+                className={`flex-shrink-0 text-xs px-1.5 py-0.5 mr-1 rounded ${
+                  selectedVersion === 'live' && interdiffActive
+                    ? 'bg-purple-100 text-purple-700 font-medium'
+                    : 'text-gray-400 hover:text-gray-600 hover:bg-gray-200'
+                }`}
+                title="Compare with latest push"
+              >
+                Δ
+              </button>
+            )}
+          </div>
+          {session && [...session.pushes].reverse().map((push, i, reversedPushes) => {
+            const isSelected = selectedVersion === String(i);
+            const hasPrev = i < reversedPushes.length - 1;
+            const isInterdiff = isSelected && interdiffActive;
+            return (
+              <div key={push.commit_id} className="flex items-center">
+                <button
+                  onClick={() => {
+                    setSelectedVersion(String(i));
+                    setInterdiffActive(false);
+                  }}
+                  className={`flex-1 text-left text-xs px-3 py-1 truncate ${
+                    isSelected && !interdiffActive
+                      ? 'bg-blue-100 text-blue-700 font-medium'
+                      : 'text-gray-500 hover:bg-gray-100'
+                  }`}
+                  title={`${push.summary}\n${new Date(push.timestamp).toLocaleString()}\n${push.change_count} changes`}
+                >
+                  <span className="font-mono text-gray-400 mr-1">{push.commit_id.slice(0, 8)}</span>
+                  {push.summary}
+                </button>
+                {hasPrev && (
+                  <button
+                    onClick={() => {
+                      setSelectedVersion(String(i));
+                      setInterdiffActive(isInterdiff ? false : true);
+                    }}
+                    className={`flex-shrink-0 text-xs px-1.5 py-0.5 mr-1 rounded ${
+                      isInterdiff
+                        ? 'bg-purple-100 text-purple-700 font-medium'
+                        : 'text-gray-400 hover:text-gray-600 hover:bg-gray-200'
+                    }`}
+                    title="Compare with previous push"
+                  >
+                    Δ
+                  </button>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -190,6 +279,7 @@ function SessionChangeList({ sessionName }: { sessionName: string }) {
                   isSelected={isSelected}
                   focused={focused}
                   isMain={false}
+                  interdiffStatus={interdiffMap?.get(change.change_id)}
                   onClick={() => selectChange(change.change_id)}
                 />
               </div>
@@ -217,30 +307,27 @@ function SessionFooter({
   baseSessionName,
   selectSession,
 }: {
-  session: { pushes: Array<{ commit_id: string; change_count: number }>; base_bookmark: string };
+  session: { pushes: Array<{ commit_id: string; change_count: number }>; base_bookmark: string; pushed_clean: boolean };
   sessionName: string;
   baseSessionName: string | null;
   selectSession: (name: string | null) => void;
 }) {
   const { selectedSessionVersion } = useAppContext();
   const [merging, setMerging] = useState(false);
+  const isLive = selectedSessionVersion === 'live';
 
-  // Always check live state for merge eligibility, independent of selected version
+  // Always check live state for base divergence detection
   const liveData = useSessionChanges(sessionName, 'live');
-  const liveChanges = liveData?.changes ?? [];
-  const latestPush = session.pushes[session.pushes.length - 1];
-  const liveMatchesPushed = latestPush && liveChanges.length > 0 &&
-    latestPush.commit_id === liveChanges[0].commit_id;
 
   // Only show "behind" on live or latest push (not old historical pushes)
-  const isLiveOrLatest = selectedSessionVersion === 'live' || selectedSessionVersion === '0';
+  const isLiveOrLatest = isLive || selectedSessionVersion === '0';
   const baseBehind = isLiveOrLatest &&
     liveData != null &&
     liveData.base_commit_id != null &&
     liveData.base_current_commit_id != null &&
     liveData.base_commit_id !== liveData.base_current_commit_id;
 
-  const canMerge = liveMatchesPushed && !baseBehind;
+  const canMerge = isLive && session.pushed_clean && !baseBehind;
 
   const handleMerge = async () => {
     if (!confirm(`Merge session "${sessionName}" into its base?`)) return;
@@ -284,30 +371,32 @@ function SessionFooter({
           <span className="ml-1 text-amber-600">· behind</span>
         )}
       </div>
-      <div className="px-3 pb-2">
-        <button
-          onClick={handleMerge}
-          disabled={merging || !canMerge}
-          className={`w-full px-3 py-1.5 text-sm rounded font-medium transition-colors ${
-            canMerge
-              ? 'bg-green-600 text-white hover:bg-green-700'
-              : 'bg-gray-100 text-gray-400 cursor-not-allowed'
-          } disabled:opacity-50`}
-          title={
-            baseBehind ? 'Base has moved — pull to update before merging'
-              : !liveMatchesPushed ? 'Push changes before merging'
-              : `Merge ${sessionName} into ${session.base_bookmark}`
-          }
-        >
-          {merging ? 'Merging...' : 'Merge'}
-        </button>
-        {baseBehind && (
-          <p className="text-xs text-amber-600 mt-1">Base has moved — pull to update</p>
-        )}
-        {!baseBehind && !liveMatchesPushed && (
-          <p className="text-xs text-gray-400 mt-1">Push changes before merging</p>
-        )}
-      </div>
+      {isLive && (
+        <div className="px-3 pb-2">
+          <button
+            onClick={handleMerge}
+            disabled={merging || !canMerge}
+            className={`w-full px-3 py-1.5 text-sm rounded font-medium transition-colors ${
+              canMerge
+                ? 'bg-green-600 text-white hover:bg-green-700'
+                : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+            } disabled:opacity-50`}
+            title={
+              baseBehind ? 'Base has moved — pull to update before merging'
+                : !session.pushed_clean ? 'Push changes before merging'
+                : `Merge ${sessionName} into ${session.base_bookmark}`
+            }
+          >
+            {merging ? 'Merging...' : 'Merge'}
+          </button>
+          {baseBehind && (
+            <p className="text-xs text-amber-600 mt-1">Base has moved — pull to update</p>
+          )}
+          {!baseBehind && !session.pushed_clean && (
+            <p className="text-xs text-gray-400 mt-1">Push changes before merging</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

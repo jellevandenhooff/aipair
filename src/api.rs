@@ -243,11 +243,18 @@ impl DagRow {
 }
 
 #[derive(Serialize)]
+struct PushChangeSnapshot {
+    change_id: String,
+    commit_id: String,
+}
+
+#[derive(Serialize)]
 struct SessionPush {
     summary: String,
     commit_id: String,
     timestamp: String,
     change_count: usize,
+    changes: Vec<PushChangeSnapshot>,
 }
 
 #[derive(Serialize)]
@@ -260,6 +267,9 @@ struct SessionSummary {
     open_thread_count: usize,
     change_count: usize,
     pushes: Vec<SessionPush>,
+    /// Whether the live bookmark state matches the latest push snapshot.
+    /// True = safe to merge; false = unpushed changes exist.
+    pushed_clean: bool,
 }
 
 #[derive(Serialize)]
@@ -301,14 +311,52 @@ async fn list_changes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 .sum();
             // Count changes from jj (if bookmark exists)
             let revset = format!("{}..{}", s.base_bookmark, s.bookmark);
-            let change_count = state.jj.log_revset(&revset)
+            let current_changes = state.jj.log_revset(&revset).ok();
+            let change_count = current_changes.as_ref()
                 .map(|c| c.len())
                 .unwrap_or(s.changes.len());
+
+            // pushed_clean: clone's live state matches latest push snapshot.
+            // Check the clone (what the user sees), not the main repo bookmark.
+            let pushed_clean = if let Some(last_push) = s.pushes.last() {
+                if last_push.changes.is_empty() {
+                    false
+                } else {
+                    let clone_path = state.jj.repo_path().join(&s.clone_path);
+                    let clone_changes = if clone_path.exists() {
+                        let clone_jj = Jj::new(&clone_path);
+                        let revset = format!("{}@origin..visible_heads()", s.base_bookmark);
+                        clone_jj.log_revset(&revset).ok()
+                    } else {
+                        // No clone — fall back to main repo bookmark state
+                        current_changes.clone()
+                    };
+                    match clone_changes {
+                        Some(live) => {
+                            let push_set: std::collections::HashSet<(&str, &str)> = last_push.changes.iter()
+                                .map(|c| (c.change_id.as_str(), c.commit_id.as_str()))
+                                .collect();
+                            let live_set: std::collections::HashSet<(&str, &str)> = live.iter()
+                                .map(|c| (c.change_id.as_str(), c.commit_id.as_str()))
+                                .collect();
+                            push_set == live_set
+                        }
+                        None => false,
+                    }
+                }
+            } else {
+                false
+            };
+
             let pushes = s.pushes.iter().map(|p| SessionPush {
                 summary: p.summary.clone(),
                 commit_id: p.commit_id.clone(),
                 timestamp: p.timestamp.to_rfc3339(),
                 change_count: p.changes.len(),
+                changes: p.changes.iter().map(|c| PushChangeSnapshot {
+                    change_id: c.change_id.clone(),
+                    commit_id: c.commit_id.clone(),
+                }).collect(),
             }).collect();
             SessionSummary {
                 name: s.name.clone(),
@@ -322,6 +370,7 @@ async fn list_changes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
                 open_thread_count: open_threads,
                 change_count,
                 pushes,
+                pushed_clean,
             }
         })
         .collect();
@@ -1031,7 +1080,7 @@ async fn get_session_changes(
             return get_session_changes_latest(&state, &session, &name).into_response();
         }
         let clone_jj = Jj::new(&clone_path);
-        let revset = format!("{}@origin..@", session.base_bookmark);
+        let revset = format!("{}@origin..visible_heads()", session.base_bookmark);
         // Base in the clone: what base_bookmark@origin resolves to
         let base = clone_jj.get_change(&format!("{}@origin", session.base_bookmark))
             .ok().map(|c| c.commit_id);

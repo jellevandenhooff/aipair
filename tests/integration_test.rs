@@ -478,12 +478,27 @@ fn test_session_lifecycle() {
     jj_cmd(&clone_dir, &["describe", "-m", "Session work"]);
 
     // 5. push from clone
-    let out = aipair_ok(&clone_dir, &["push", "-m", "First push"]);
+    let out = aipair_ok(&clone_dir, &["push", "-m", "First push", "--rev", "@"]);
     assert!(out.contains("Pushed!"), "push: {}", out);
 
     // 6. session list from main — should show push summary
     let out = aipair_ok(&main_dir, &["session", "list"]);
     assert!(out.contains("First push"), "list after push: {}", out);
+
+    // 6b. Create a second session and push work into it (simulates parallel sessions)
+    aipair_ok(&main_dir, &["session", "new", "other-session"]);
+    let other_clone_dir = main_dir.join(".aipair/sessions/other-session/repo");
+    std::fs::write(other_clone_dir.join("other-session-file.txt"), "other work\n").unwrap();
+    jj_cmd(&other_clone_dir, &["describe", "-m", "Other session work"]);
+    aipair_ok(&other_clone_dir, &["push", "-m", "Other push", "--rev", "@"]);
+
+    // 6c. Verify scoped clone: test-session's clone should NOT see other-session's commits
+    let visible_str = jj_cmd(&clone_dir, &["log", "--no-graph", "-r", "visible_heads()", "-T", r#"bookmarks ++ "\n""#]);
+    assert!(
+        !visible_str.contains("other-session"),
+        "test-session's clone should not see other-session's bookmarks. Got: {}",
+        visible_str
+    );
 
     // 7. status from clone
     let out = aipair_ok(&clone_dir, &["status"]);
@@ -498,8 +513,8 @@ fn test_session_lifecycle() {
     let out = aipair_ok(&clone_dir, &["pull"]);
     assert!(out.contains("no conflicts"), "pull: {}", out);
 
-    // 10. push after rebase
-    let out = aipair_ok(&clone_dir, &["push", "-m", "After rebase"]);
+    // 10. push after rebase (@ is the empty WC commit after rebase, @- is the work)
+    let out = aipair_ok(&clone_dir, &["push", "-m", "After rebase", "--rev", "@-"]);
     assert!(out.contains("Pushed!"), "push after rebase: {}", out);
 
     // 11. session merge from main
@@ -510,11 +525,16 @@ fn test_session_lifecycle() {
     let out = aipair_ok(&main_dir, &["session", "list"]);
     assert!(out.contains("merged"), "list after merge: {}", out);
 
-    // 13. status from main — no active sessions
+    // 13. status from main — test-session merged, other-session still active
     let out = aipair_ok(&main_dir, &["status"]);
     assert!(
-        out.contains("No active sessions"),
-        "status after merge: {}",
+        !out.contains("test-session"),
+        "test-session should not be listed as active after merge: {}",
+        out
+    );
+    assert!(
+        out.contains("other-session"),
+        "other-session should still be active: {}",
         out
     );
 }
@@ -538,7 +558,7 @@ async fn test_session_feedback_respond() {
     let clone_dir = main_dir.join(".aipair/sessions/test-session/repo");
     std::fs::write(clone_dir.join("feature.txt"), "new feature\n").unwrap();
     jj_cmd(&clone_dir, &["describe", "-m", "Add feature"]);
-    aipair_ok(&clone_dir, &["push", "-m", "Feature push"]);
+    aipair_ok(&clone_dir, &["push", "-m", "Feature push", "--rev", "@"]);
 
     // Start server in main repo to create reviews via API
     let (mut server, base_url) = start_server(&main_dir).await;
@@ -635,7 +655,7 @@ async fn test_session_api() {
     let clone_dir = main_dir.join(".aipair/sessions/api-session/repo");
     std::fs::write(clone_dir.join("api-file.txt"), "api feature\n").unwrap();
     jj_cmd(&clone_dir, &["describe", "-m", "API feature"]);
-    aipair_ok(&clone_dir, &["push", "-m", "API push"]);
+    aipair_ok(&clone_dir, &["push", "-m", "API push", "--rev", "@"]);
 
     // Start server
     let (mut server, base_url) = start_server(&main_dir).await;
@@ -682,9 +702,9 @@ async fn test_session_api() {
         "Session changes should have session_name"
     );
 
-    // GET /api/sessions/api-session/live → verify live endpoint
+    // GET /api/sessions/api-session/changes?version=live → verify live endpoint
     let resp = client
-        .get(&format!("{}/api/sessions/api-session/live", base_url))
+        .get(&format!("{}/api/sessions/api-session/changes?version=live", base_url))
         .send()
         .await
         .unwrap();

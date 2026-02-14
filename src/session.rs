@@ -184,8 +184,9 @@ pub fn session_new(name: &str, base_bookmark: &str) -> Result<()> {
         anyhow::bail!("Clone directory already exists: {}", clone_path.display());
     }
 
+    let bookmark = format!("session/{name}");
     println!("Cloning into {}...", clone_path.display());
-    let clone_jj = Jj::git_clone(&repo_path, &clone_path)?;
+    let clone_jj = Jj::git_clone_branches(&repo_path, &clone_path, &[base_bookmark])?;
 
     // Override immutable_heads to only include trunk. jj's default includes
     // untracked_remote_bookmarks(), which makes other sessions' commits immutable.
@@ -198,7 +199,6 @@ pub fn session_new(name: &str, base_bookmark: &str) -> Result<()> {
     clone_jj.new_change_on(&format!("{base_bookmark}@origin"))?;
 
     // Create bookmark in clone
-    let bookmark = format!("session/{name}");
     clone_jj.bookmark_create(&bookmark, "@")?;
 
     // Write clone marker
@@ -289,15 +289,18 @@ pub fn push(message: &str, rev: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    jj.move_bookmark(&marker.bookmark, &bookmark_target)?;
-
     // Reuse session data from the check above
     let mut session = session_check
         .context("Session metadata not found in main repo")?;
     let allow_new = session.pushes.is_empty();
 
-    // Ensure the remote bookmark is tracked (needed after first push or re-clone)
+    // Ensure the remote bookmark is tracked, then fetch to sync remote tracking state
+    // (pull only fetches base). Re-set the bookmark to our target after fetch.
     jj.bookmark_track(&format!("{}@origin", marker.bookmark))?;
+    if !allow_new {
+        let _ = jj.git_fetch_branches(&[&marker.bookmark]);
+    }
+    jj.move_bookmark(&marker.bookmark, &bookmark_target)?;
 
     println!("Pushing {}...", marker.bookmark);
     let push_output = jj.git_push_bookmark(&marker.bookmark, allow_new)?;
@@ -353,7 +356,7 @@ pub fn pull() -> Result<()> {
     let base_ref = format!("{}@origin", session.base_bookmark);
 
     println!("Fetching from origin...");
-    let fetch_output = jj.git_fetch()?;
+    let fetch_output = jj.git_fetch_branches(&[&session.base_bookmark])?;
     if !fetch_output.is_empty() {
         print!("{fetch_output}");
     }

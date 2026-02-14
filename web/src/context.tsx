@@ -16,6 +16,7 @@ interface UIState {
   todoPanelVisible: boolean;
   selectedSessionName: string | null;
   selectedSessionVersion: string;
+  interdiffActive: boolean;
   newCommentText: string;
   replyingToThread: boolean;
   replyText: string;
@@ -54,8 +55,10 @@ interface AppContextValue {
   // Session selection
   selectedSessionName: string | null;
   selectedSessionVersion: string;
+  interdiffActive: boolean;
   selectSession: (name: string | null) => void;
   selectSessionVersion: (version: string) => void;
+  setInterdiffActive: (active: boolean) => void;
 
   // Navigation helpers
   navigateChanges: (direction: 'up' | 'down', changes: Change[], selectFn?: (id: string) => void) => void;
@@ -80,6 +83,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     todoPanelVisible: false,
     selectedSessionName: null,
     selectedSessionVersion: 'live',
+    interdiffActive: false,
     newCommentText: '',
     replyingToThread: false,
     replyText: '',
@@ -184,6 +188,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ...prev,
       selectedSessionName: name,
       selectedSessionVersion: 'live',
+      interdiffActive: false,
     }));
     // Clear change selection when switching sessions
     startTransition(() => {
@@ -195,7 +200,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [startTransition]);
 
   const selectSessionVersion = useCallback((version: string) => {
-    setUI(prev => ({ ...prev, selectedSessionVersion: version }));
+    setUI(prev => ({ ...prev, selectedSessionVersion: version, interdiffActive: false }));
+  }, []);
+
+  const setInterdiffActive = useCallback((active: boolean) => {
+    setUI(prev => ({ ...prev, interdiffActive: active }));
   }, []);
 
   // Navigation helpers
@@ -287,8 +296,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // Session selection
     selectedSessionName: ui.selectedSessionName,
     selectedSessionVersion: ui.selectedSessionVersion,
+    interdiffActive: ui.interdiffActive,
     selectSession,
     selectSessionVersion,
+    setInterdiffActive,
 
     // Navigation
     navigateChanges,

@@ -412,6 +412,34 @@ impl Jj {
         Ok(Self::new(dest))
     }
 
+    /// Clone a repo, fetching only specific branches. Returns Jj for the new clone.
+    pub fn git_clone_branches(source: &Path, dest: &Path, branches: &[&str]) -> Result<Self> {
+        let mut args = vec![
+            "git".to_string(),
+            "clone".to_string(),
+        ];
+        for b in branches {
+            args.push("-b".to_string());
+            args.push(b.to_string());
+        }
+        args.push(source.to_string_lossy().to_string());
+        args.push(dest.to_string_lossy().to_string());
+
+        let output = Command::new("jj")
+            .args(&args)
+            .output()
+            .context("Failed to run jj git clone")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "jj git clone failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(Self::new(dest))
+    }
+
     /// Set a config value in the repo-level config.
     pub fn set_repo_config(&self, key: &str, value: &str) -> Result<()> {
         let output = Command::new("jj")
@@ -456,6 +484,29 @@ impl Jj {
         let output = Command::new("jj")
             .current_dir(&self.repo_path)
             .args(["git", "fetch"])
+            .output()
+            .context("Failed to run jj git fetch")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "jj git fetch failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(String::from_utf8(output.stdout)?)
+    }
+
+    /// Fetch only specific branches from origin.
+    pub fn git_fetch_branches(&self, branches: &[&str]) -> Result<String> {
+        let mut args = vec!["git", "fetch"];
+        for b in branches {
+            args.push("-b");
+            args.push(b);
+        }
+        let output = Command::new("jj")
+            .current_dir(&self.repo_path)
+            .args(&args)
             .output()
             .context("Failed to run jj git fetch")?;
 
