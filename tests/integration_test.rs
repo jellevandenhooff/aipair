@@ -540,6 +540,61 @@ fn test_session_lifecycle() {
 }
 
 #[tokio::test]
+async fn test_session_push_api() {
+    let temp_dir = TempDir::new().unwrap();
+    let main_dir = temp_dir.path().join("main");
+    std::fs::create_dir(&main_dir).unwrap();
+
+    // Setup main repo
+    jj_cmd(&main_dir, &["git", "init", "--colocate"]);
+    std::fs::write(main_dir.join(".gitignore"), ".aipair/\n").unwrap();
+    std::fs::write(main_dir.join("test.txt"), "hello\n").unwrap();
+    jj_cmd(&main_dir, &["describe", "-m", "Initial commit"]);
+    jj_cmd(&main_dir, &["bookmark", "create", "main", "-r", "@"]);
+    jj_cmd(&main_dir, &["new", "-m", "wc"]);
+
+    // Create session, make a change, push
+    aipair_ok(&main_dir, &["session", "new", "test-session"]);
+    let clone_dir = main_dir.join(".aipair/sessions/test-session/repo");
+    std::fs::write(clone_dir.join("feature.txt"), "new feature\n").unwrap();
+    jj_cmd(&clone_dir, &["describe", "-m", "Add feature"]);
+    aipair_ok(&clone_dir, &["push", "-m", "Feature push", "--rev", "@"]);
+
+    // Start server and query session changes API
+    let (mut server, base_url) = start_server(&main_dir).await;
+    let client = Client::new();
+
+    // Live view should show the pushed change
+    let resp = client
+        .get(&format!("{}/api/sessions/test-session/changes", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let changes = body["changes"].as_array().unwrap();
+    assert!(!changes.is_empty(), "Live view should show pushed changes");
+    let change_id = changes.iter()
+        .find(|c| c["description"].as_str().unwrap_or("").contains("Add feature"))
+        .expect("Should find the 'Add feature' change in live view");
+    assert!(!change_id["change_id"].as_str().unwrap().is_empty());
+
+    // Historical view (version=0) should also work
+    let resp = client
+        .get(&format!("{}/api/sessions/test-session/changes?version=0", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "version=0 should succeed");
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let changes = body["changes"].as_array().unwrap();
+    assert!(!changes.is_empty(), "version=0 should have changes");
+
+    let _ = server.kill();
+    let _ = server.wait();
+}
+
+#[tokio::test]
 async fn test_session_feedback_respond() {
     let temp_dir = TempDir::new().unwrap();
     let main_dir = temp_dir.path().join("main");

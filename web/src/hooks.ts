@@ -13,6 +13,7 @@ import {
   resolveThread as apiResolveThread,
   reopenThread as apiReopenThread,
   mergeChange as apiMergeChange,
+  createSession as apiCreateSession,
   mergeSession as apiMergeSession,
   type Change,
   type ChangesData,
@@ -153,6 +154,14 @@ export async function removeTodo(id: string) {
 }
 
 // Session mutation helpers
+export async function createSessionAction(name: string, base?: string) {
+  const result = await apiCreateSession(name, base);
+  if (result.success) {
+    mutate('changes');
+  }
+  return result;
+}
+
 export async function mergeSessionAction(name: string) {
   const result = await apiMergeSession(name);
   if (result.success) {

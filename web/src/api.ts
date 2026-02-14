@@ -216,6 +216,19 @@ export async function fetchSessionChanges(name: string, version: string = 'live'
   };
 }
 
+export async function createSession(name: string, base?: string): Promise<MergeResult> {
+  const res = await fetch(`${API_BASE}/sessions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, base: base ?? 'main' }),
+  });
+  const data = await res.json();
+  if (!res.ok && !data.message) {
+    throw new Error(`Failed to create session: ${res.statusText}`);
+  }
+  return data;
+}
+
 export async function mergeSession(name: string): Promise<MergeResult> {
   const res = await fetch(`${API_BASE}/sessions/${name}/merge`, {
     method: 'POST',

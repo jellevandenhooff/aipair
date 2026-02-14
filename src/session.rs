@@ -153,7 +153,8 @@ pub fn detect_context() -> Result<SessionContext> {
 
 // --- Operations ---
 
-pub fn session_new(name: &str, base_bookmark: &str) -> Result<()> {
+/// Core session creation logic, usable from both CLI and API.
+pub fn session_new_inner(jj: &Jj, store: &SessionStore, name: &str, base_bookmark: &str) -> Result<Session> {
     // Validate name
     if !name
         .chars()
@@ -162,9 +163,7 @@ pub fn session_new(name: &str, base_bookmark: &str) -> Result<()> {
         anyhow::bail!("Session name must be alphanumeric with hyphens/underscores only");
     }
 
-    let jj = Jj::discover()?;
     let repo_path = jj.repo_path().to_path_buf();
-    let store = SessionStore::new(&repo_path);
 
     // Check for duplicate
     if store.get(name)?.is_some() {
@@ -185,8 +184,15 @@ pub fn session_new(name: &str, base_bookmark: &str) -> Result<()> {
     }
 
     let bookmark = format!("session/{name}");
-    println!("Cloning into {}...", clone_path.display());
     let clone_jj = Jj::git_clone_branches(&repo_path, &clone_path, &[base_bookmark])?;
+
+    // The clone was created with `-b <base>` so git only fetches that branch.
+    // Add a refspec for the session bookmark so jj's auto-import doesn't
+    // discard it after push (jj removes bookmarks not in the fetch refspec).
+    clone_jj.git_config_add(
+        "remote.origin.fetch",
+        &format!("+refs/heads/{bookmark}:refs/remotes/origin/{bookmark}"),
+    )?;
 
     // Override immutable_heads to only include trunk. jj's default includes
     // untracked_remote_bookmarks(), which makes other sessions' commits immutable.
@@ -215,8 +221,8 @@ pub fn session_new(name: &str, base_bookmark: &str) -> Result<()> {
     // Save session metadata
     let session = Session {
         name: name.to_string(),
-        clone_path: clone_rel.clone(),
-        bookmark: bookmark.clone(),
+        clone_path: clone_rel,
+        bookmark,
         base_change_id,
         base_bookmark: base_bookmark.to_string(),
         status: SessionStatus::Active,
@@ -225,6 +231,19 @@ pub fn session_new(name: &str, base_bookmark: &str) -> Result<()> {
         changes: Vec::new(),
     };
     store.save(&session)?;
+
+    Ok(session)
+}
+
+pub fn session_new(name: &str, base_bookmark: &str) -> Result<()> {
+    let jj = Jj::discover()?;
+    let repo_path = jj.repo_path().to_path_buf();
+    let store = SessionStore::new(&repo_path);
+
+    println!("Cloning into .aipair/sessions/{name}/repo...");
+    let session = session_new_inner(&jj, &store, name, base_bookmark)?;
+
+    let clone_path = repo_path.join(&session.clone_path);
 
     // Check for aipair mention in CLAUDE.md
     let claude_md = repo_path.join("CLAUDE.md");
@@ -236,10 +255,10 @@ pub fn session_new(name: &str, base_bookmark: &str) -> Result<()> {
     println!();
     println!("Session '{name}' created!");
     println!("  Clone: {}", clone_path.display());
-    println!("  Bookmark: {bookmark}");
+    println!("  Bookmark: {}", session.bookmark);
     println!();
     println!("Next steps:");
-    println!("  cd {clone_rel}");
+    println!("  cd {}", session.clone_path);
     println!("  # make changes, then:");
     println!("  aipair push -m \"description of changes\"");
 
@@ -294,12 +313,6 @@ pub fn push(message: &str, rev: Option<&str>) -> Result<()> {
         .context("Session metadata not found in main repo")?;
     let allow_new = session.pushes.is_empty();
 
-    // Ensure the remote bookmark is tracked, then fetch to sync remote tracking state
-    // (pull only fetches base). Re-set the bookmark to our target after fetch.
-    jj.bookmark_track(&format!("{}@origin", marker.bookmark))?;
-    if !allow_new {
-        let _ = jj.git_fetch_branches(&[&marker.bookmark]);
-    }
     jj.move_bookmark(&marker.bookmark, &bookmark_target)?;
 
     println!("Pushing {}...", marker.bookmark);

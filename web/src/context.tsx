@@ -8,6 +8,8 @@ interface SelectionState {
   selectedChangeId: string | null;
 }
 
+type ActiveTab = 'review' | 'terminal';
+
 // UI state - instant updates, no transitions needed
 interface UIState {
   focusedPanel: FocusedPanel;
@@ -16,6 +18,7 @@ interface UIState {
   todoPanelVisible: boolean;
   selectedSessionName: string | null;
   selectedSessionVersion: string;
+  activeTab: ActiveTab;
   interdiffActive: boolean;
   newCommentText: string;
   replyingToThread: boolean;
@@ -55,9 +58,11 @@ interface AppContextValue {
   // Session selection
   selectedSessionName: string | null;
   selectedSessionVersion: string;
+  activeTab: ActiveTab;
   interdiffActive: boolean;
   selectSession: (name: string | null) => void;
   selectSessionVersion: (version: string) => void;
+  setActiveTab: (tab: ActiveTab) => void;
   setInterdiffActive: (active: boolean) => void;
 
   // Navigation helpers
@@ -83,6 +88,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     todoPanelVisible: false,
     selectedSessionName: null,
     selectedSessionVersion: 'live',
+    activeTab: 'review',
     interdiffActive: false,
     newCommentText: '',
     replyingToThread: false,
@@ -183,11 +189,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }));
   }, []);
 
+  const setActiveTab = useCallback((tab: ActiveTab) => {
+    setUI(prev => ({ ...prev, activeTab: tab }));
+  }, []);
+
   const selectSession = useCallback((name: string | null) => {
     setUI(prev => ({
       ...prev,
       selectedSessionName: name,
       selectedSessionVersion: 'live',
+      activeTab: 'review',
       interdiffActive: false,
     }));
     // Clear change selection when switching sessions
@@ -296,9 +307,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // Session selection
     selectedSessionName: ui.selectedSessionName,
     selectedSessionVersion: ui.selectedSessionVersion,
+    activeTab: ui.activeTab,
     interdiffActive: ui.interdiffActive,
     selectSession,
     selectSessionVersion,
+    setActiveTab,
     setInterdiffActive,
 
     // Navigation

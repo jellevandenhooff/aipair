@@ -1,9 +1,13 @@
+import { useState } from 'react';
 import { useAppContext } from '../context';
-import { useChanges, type SessionSummary } from '../hooks';
+import { useChanges, createSessionAction, type SessionSummary } from '../hooks';
 
 export function SessionSidebar() {
   const { selectedSessionName, selectSession } = useAppContext();
   const { sessions } = useChanges();
+  const [showNewInput, setShowNewInput] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [creating, setCreating] = useState(false);
 
   // Build a tree: sessions with base_bookmark starting with "session/" are children
   const sessionsByBookmark = new Map<string, SessionSummary>();
@@ -54,11 +58,54 @@ export function SessionSidebar() {
   const activeSessions = sortTreeOrder(sessions.filter(s => s.status === 'active'));
   const mergedSessions = sessions.filter(s => s.status === 'merged');
 
+  const handleCreateSession = async () => {
+    const trimmed = newName.trim();
+    if (!trimmed || creating) return;
+    setCreating(true);
+    try {
+      const result = await createSessionAction(trimmed);
+      if (result.success) {
+        setNewName('');
+        setShowNewInput(false);
+        selectSession(trimmed);
+      } else {
+        alert(result.message);
+      }
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Failed to create session');
+    } finally {
+      setCreating(false);
+    }
+  };
+
   return (
     <aside className="w-48 border-r border-gray-200 bg-gray-50 flex flex-col overflow-y-auto">
-      <div className="px-2 py-2 border-b border-gray-200">
+      <div className="px-2 py-2 border-b border-gray-200 flex items-center justify-between">
         <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Sessions</span>
+        <button
+          onClick={() => { setShowNewInput(v => !v); setNewName(''); }}
+          className="text-gray-400 hover:text-gray-600 text-sm leading-none"
+          title="New session"
+        >+</button>
       </div>
+
+      {showNewInput && (
+        <div className="px-2 py-1 border-b border-gray-200">
+          <input
+            autoFocus
+            type="text"
+            value={newName}
+            onChange={e => setNewName(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') handleCreateSession();
+              if (e.key === 'Escape') { setShowNewInput(false); setNewName(''); }
+            }}
+            placeholder="session-name"
+            disabled={creating}
+            className="w-full text-sm px-1 py-0.5 border border-gray-300 rounded focus:outline-none focus:border-blue-400"
+          />
+        </div>
+      )}
 
       {/* Main entry */}
       <button

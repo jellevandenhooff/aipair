@@ -458,6 +458,24 @@ impl Jj {
         Ok(())
     }
 
+    /// Add a value to a multi-valued git config key (e.g. remote.origin.fetch).
+    pub fn git_config_add(&self, key: &str, value: &str) -> Result<()> {
+        let output = Command::new("git")
+            .current_dir(&self.repo_path)
+            .args(["config", "--add", key, value])
+            .output()
+            .context("Failed to run git config --add")?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "git config --add failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        Ok(())
+    }
+
     pub fn git_push_bookmark(&self, bookmark: &str, allow_new: bool) -> Result<String> {
         let mut args = vec!["git", "push", "--bookmark", bookmark];
         if allow_new {

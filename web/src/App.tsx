@@ -1,6 +1,7 @@
 import { Suspense, useEffect, useMemo } from 'react';
 import { ChangeList } from './components/ChangeList';
 import { SelectedChangeView } from './components/SelectedChangeView';
+import { Terminal } from './components/Terminal';
 import { TodoPanel } from './components/TodoPanel';
 import { SessionSidebar } from './components/SessionSidebar';
 import { TimelineView } from './components/TimelineView';
@@ -10,7 +11,7 @@ import { useChanges, useSessionChanges } from './hooks';
 
 // Inner component that needs changes data to find selected change
 function MainContent() {
-  const { selectedSessionName, selectedSessionVersion } = useAppContext();
+  const { selectedSessionName, selectedSessionVersion, activeTab, setActiveTab } = useAppContext();
   const globalData = useChanges();
 
   // Convert version for API: UI shows pushes reversed (newest first), API uses 0-indexed from oldest
@@ -72,17 +73,53 @@ function MainContent() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [focusedPanel, changes, cyclePanel, navigateChanges, selectChange, selectedChangeId]);
 
+  const showTerminalTab = selectedSessionName !== null;
+
   return (
     <main className="flex-1 flex flex-col overflow-hidden relative">
-      {selectedChange ? (
-        <Suspense fallback={<LoadingView message="Loading diff..." />}>
-          <SelectedChangeView change={selectedChange} />
-        </Suspense>
-      ) : (
-        <div className="flex-1 flex items-center justify-center text-gray-400">
-          Select a change to view
+      {/* Tab bar — only shown when a session is selected */}
+      {showTerminalTab && (
+        <div className="flex border-b border-gray-200 bg-white shrink-0">
+          <button
+            onClick={() => setActiveTab('review')}
+            className={`px-4 py-1.5 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'review'
+                ? 'border-blue-500 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >Review</button>
+          <button
+            onClick={() => setActiveTab('terminal')}
+            className={`px-4 py-1.5 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'terminal'
+                ? 'border-blue-500 text-blue-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
+          >Terminal</button>
         </div>
       )}
+
+      {/* Tab content — both panels use absolute positioning so the terminal
+           keeps its real dimensions (visibility:hidden, not display:none)
+           to avoid 0x0 resize events that cause tmux newlines */}
+      <div className="flex-1 relative overflow-hidden">
+        {showTerminalTab && (
+          <div className={`absolute inset-0 flex flex-col ${activeTab === 'terminal' ? '' : 'invisible'}`}>
+            <Terminal sessionName={selectedSessionName} />
+          </div>
+        )}
+        <div className={`absolute inset-0 flex flex-col overflow-hidden ${showTerminalTab && activeTab === 'terminal' ? 'invisible' : ''}`}>
+          {selectedChange ? (
+            <Suspense fallback={<LoadingView message="Loading diff..." />}>
+              <SelectedChangeView change={selectedChange} />
+            </Suspense>
+          ) : (
+            <div className="flex-1 flex items-center justify-center text-gray-400">
+              Select a change to view
+            </div>
+          )}
+        </div>
+      </div>
     </main>
   );
 }

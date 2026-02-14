@@ -1,12 +1,14 @@
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
+    extract::ws::{Message, WebSocket, WebSocketUpgrade},
     http::StatusCode,
     response::IntoResponse,
     routing::{delete, get, patch, post},
 };
 #[cfg(feature = "bundled-frontend")]
 use axum::http::header;
+use futures_util::{SinkExt, StreamExt};
 use renderdag::{Ancestor, GraphRow, GraphRowRenderer, Renderer};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -112,8 +114,10 @@ pub async fn serve(port: Option<u16>) -> anyhow::Result<()> {
         .route("/api/todos/{id}", patch(update_todo))
         .route("/api/todos/{id}", delete(delete_todo))
         .route("/api/timeline", get(get_timeline))
+        .route("/api/sessions", post(create_session))
         .route("/api/sessions/{name}/merge", post(merge_session))
         .route("/api/sessions/{name}/changes", get(get_session_changes))
+        .route("/api/sessions/{name}/terminal", get(terminal_ws))
         .with_state(state);
 
     // Add static file serving for bundled frontend
@@ -1100,11 +1104,16 @@ async fn get_session_changes(
             // Old push without snapshot data — fall back to latest
             return get_session_changes_latest(&state, &session, &name).into_response();
         }
-        // Query jj by commit_ids to get full change info (including parents)
+        // Query the clone (not main repo) — push snapshot commit IDs are clone-local
+        let clone_path = state.jj.repo_path().join(&session.clone_path);
+        let jj = if clone_path.exists() {
+            Jj::new(&clone_path)
+        } else {
+            Jj::new(state.jj.repo_path())
+        };
         let commit_ids: Vec<&str> = push.changes.iter().map(|c| c.commit_id.as_str()).collect();
         let revset = commit_ids.join(" | ");
-        match state.jj.log_revset(&revset) {
-            // For historical pushes, base is unknown (could derive from parents but not critical)
+        match jj.log_revset(&revset) {
             Ok(changes) => (changes_to_status(changes, &name), None),
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
@@ -1183,6 +1192,38 @@ fn get_session_changes_latest(
     })
 }
 
+#[derive(Deserialize)]
+struct CreateSessionRequest {
+    name: String,
+    #[serde(default = "default_base")]
+    base: String,
+}
+
+fn default_base() -> String {
+    "main".to_string()
+}
+
+async fn create_session(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CreateSessionRequest>,
+) -> impl IntoResponse {
+    match crate::session::session_new_inner(&state.jj, &state.sessions, &req.name, &req.base) {
+        Ok(_session) => Json(MergeResponse {
+            success: true,
+            message: format!("Session '{}' created", req.name),
+        })
+        .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(MergeResponse {
+                success: false,
+                message: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
 async fn merge_session(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
@@ -1246,6 +1287,120 @@ async fn merge_session(
         ),
     })
     .into_response()
+}
+
+// --- Terminal WebSocket ---
+
+#[derive(Deserialize)]
+struct TerminalQuery {
+    #[serde(default = "default_cols")]
+    cols: u16,
+    #[serde(default = "default_rows")]
+    rows: u16,
+}
+
+fn default_cols() -> u16 { 80 }
+fn default_rows() -> u16 { 24 }
+
+async fn terminal_ws(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Query(query): Query<TerminalQuery>,
+) -> impl IntoResponse {
+    // Resolve session clone path
+    let session = match state.sessions.get(&name) {
+        Ok(Some(s)) => s,
+        Ok(None) => return (StatusCode::NOT_FOUND, format!("Session '{name}' not found")).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    let clone_path = state.jj.repo_path().join(&session.clone_path);
+    if !clone_path.exists() {
+        return (StatusCode::NOT_FOUND, format!("Clone for session '{name}' not found")).into_response();
+    }
+
+    ws.on_upgrade(move |socket| handle_terminal(socket, name, clone_path, query.cols, query.rows))
+}
+
+async fn handle_terminal(socket: WebSocket, name: String, working_dir: std::path::PathBuf, cols: u16, rows: u16) {
+    // Ensure tmux session exists
+    if let Err(e) = crate::terminal::ensure_tmux_session(&name, &working_dir) {
+        warn!("Failed to ensure tmux session: {e}");
+        return;
+    }
+
+    // Spawn PTY
+    let (mut reader, mut writer, master) = match crate::terminal::spawn_terminal(&name, cols, rows) {
+        Ok(t) => t,
+        Err(e) => {
+            warn!("Failed to spawn terminal: {e}");
+            return;
+        }
+    };
+
+    let (mut ws_sender, mut ws_receiver) = socket.split();
+
+    // PTY reader → WebSocket (binary)
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+    tokio::task::spawn_blocking(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if tx.blocking_send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let send_task = tokio::spawn(async move {
+        while let Some(data) = rx.recv().await {
+            if ws_sender.send(Message::Binary(data.into())).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // WebSocket → PTY writer + handle control messages
+    let recv_task = tokio::spawn(async move {
+        while let Some(Ok(msg)) = ws_receiver.next().await {
+            match msg {
+                Message::Binary(data) => {
+                    if writer.write_all(&data).is_err() {
+                        break;
+                    }
+                }
+                Message::Text(text) => {
+                    // JSON control messages (resize)
+                    if let Ok(ctrl) = serde_json::from_str::<serde_json::Value>(&text) {
+                        if ctrl.get("type").and_then(|v| v.as_str()) == Some("resize") {
+                            let new_cols = ctrl.get("cols").and_then(|v| v.as_u64()).unwrap_or(80) as u16;
+                            let new_rows = ctrl.get("rows").and_then(|v| v.as_u64()).unwrap_or(24) as u16;
+                            let _ = master.resize(portable_pty::PtySize {
+                                rows: new_rows,
+                                cols: new_cols,
+                                pixel_width: 0,
+                                pixel_height: 0,
+                            });
+                        }
+                    }
+                }
+                Message::Close(_) => break,
+                _ => {}
+            }
+        }
+    });
+
+    // Wait for either task to finish
+    tokio::select! {
+        _ = send_task => {},
+        _ = recv_task => {},
+    }
 }
 
 #[cfg(test)]
